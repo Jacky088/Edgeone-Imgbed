@@ -56,15 +56,17 @@
     </label>
 
     <div v-if="uploading" class="mt-6 space-y-2">
-      <div class="flex justify-between text-xs font-medium text-gray-600 dark:text-gray-300">
-        <span>上传中...</span>
+      <div class="flex justify-between text-xs font-bold text-blue-600 dark:text-blue-400">
+        <span>正在上传...</span>
         <span>{{ uploadProgress }}%</span>
       </div>
-      <Progress :model-value="uploadProgress" class="h-2 rounded-full bg-gray-100 dark:bg-gray-800" />
+      <Progress :model-value="uploadProgress" class="h-4 rounded-full bg-gray-200 dark:bg-gray-700" />
     </div>
 
     <Button
-      class="mt-6 w-full h-12 rounded-xl text-base font-medium shadow-lg shadow-blue-500/20 transition-all hover:shadow-blue-500/30 hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm"
+      class="mt-6 w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all 
+             bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500
+             hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
       :disabled="!file || uploading"
       @click="uploadFile"
     >
@@ -84,9 +86,6 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { toast } from 'vue-sonner'
 import { UploadCloud, XCircle, Loader2, FileImage } from 'lucide-vue-next'
-
-// ... (Script 逻辑部分保持完全不变，只需复制你之前文件中的 script 内容即可) ...
-// 为了确保功能正常，我将 script 部分完整列出：
 
 interface Props {
   belongTo?: string
