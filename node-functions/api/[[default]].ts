@@ -17,7 +17,7 @@ const requestConfig = {
 }
 const BASE_URL = 'https://cnb.cool/' + process.env.SLUG_IMG + '/-/imgs/'
 
-// 添加解析 JSON 的中间件，用于 admin delete 接口解析 body
+// 解析 JSON body
 app.use(express.json())
 
 app.use((req, res, next) => {
@@ -29,13 +29,31 @@ app.get('/', (req, res) => {
   res.json({ message: 'Hello from Express on Node Functions!' })
 })
 
-// [新增] 管理接口：获取图片列表
+// [新增] 身份验证接口
+app.post('/auth/verify', (req, res) => {
+  const { password } = req.body
+  // 获取环境变量中的密码
+  const sysPassword = process.env.SITE_PASSWORD
+
+  // 如果未设置环境变量，默认开放访问（或者你可以改为返回错误）
+  if (!sysPassword) {
+    return res.json(reply(0, '未设置密码，开放访问', { token: 'open-access' }))
+  }
+
+  if (password === sysPassword) {
+    return res.json(reply(0, '验证通过', { token: 'authorized' }))
+  } else {
+    return res.status(403).json(reply(403, '口令错误', null))
+  }
+})
+
+// 管理接口：获取图片列表
 app.get('/admin/list', (req, res) => {
   const list = store.getAll()
   res.json(reply(0, '获取成功', list))
 })
 
-// [新增] 管理接口：删除图片 (仅删除记录)
+// 管理接口：删除图片 (仅删除记录)
 app.post('/admin/delete', (req, res) => {
   const { id } = req.body
   if (!id) return res.status(400).json(reply(1, 'ID不能为空', null))
@@ -88,8 +106,8 @@ app.post(
         thumbnailAssets = thumbnailResult.assets
       }
 
-      // [新增] 保存上传记录
-      // 使用 Node.js 内置的 crypto.randomUUID() 替代 uuid 库，解决构建报错
+      // 保存上传记录
+      // 使用 Node.js 内置 crypto.randomUUID()
       const record: ImageRecord = {
         id: crypto.randomUUID(),
         name: mainFile.originalname,
@@ -119,8 +137,6 @@ app.post(
 
 /**
  * 从 URL 中提取图片路径
- * @param {string} url - 完整的 URL
- * @returns {string} - 提取的图片路径
  */
 function extractImagePath(url) {
   if (url.includes('-/imgs/')) {
