@@ -122,15 +122,26 @@ const handleLogout = () => {
               </div>
             </div>
 
-            <div class="border-t border-dashed border-gray-100 pt-3">
+            <div class="border-t border-dashed border-gray-100 pt-3 space-y-3">
               <div class="group">
                 <p class="mb-1 text-xs font-medium uppercase tracking-wider text-gray-400">CNB原图链接</p>
                 <a
                   :href="uploadInfo.urlOriginal"
                   target="_blank"
-                  class="block truncate text-xs text-gray-400 hover:text-gray-600"
+                  class="block break-all text-xs text-gray-400 hover:text-gray-600"
                 >
                   {{ uploadInfo.urlOriginal }}
+                </a>
+              </div>
+              
+              <div v-if="uploadInfo.thumbnailOriginalUrl" class="group">
+                <p class="mb-1 text-xs font-medium uppercase tracking-wider text-gray-400">CNB缩略图链接</p>
+                <a
+                  :href="uploadInfo.thumbnailOriginalUrl"
+                  target="_blank"
+                  class="block break-all text-xs text-gray-400 hover:text-gray-600"
+                >
+                  {{ uploadInfo.thumbnailOriginalUrl }}
                 </a>
               </div>
             </div>
