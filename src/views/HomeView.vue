@@ -148,7 +148,7 @@ const copyToClipboard = async (text: string | undefined) => {
                     </div>
                     <div 
                       @click="copyToClipboard(uploadInfo.url)"
-                      class="cursor-pointer overflow-hidden rounded-xl bg-gray-50 py-3 pl-10 pr-12 text-sm text-gray-600 ring-1 ring-gray-200 transition-all hover:bg-blue-50 hover:text-blue-700 hover:ring-blue-300 active:scale-[0.99] dark:bg-gray-900 dark:text-gray-300 dark:ring-gray-800 dark:hover:bg-blue-900/20 dark:hover:text-blue-400 dark:hover:ring-blue-700"
+                      class="flex min-h-[3rem] cursor-pointer items-center overflow-hidden rounded-xl bg-gray-50 py-3 pl-10 pr-12 text-sm text-gray-600 ring-1 ring-gray-200 transition-all hover:bg-blue-50 hover:text-blue-700 hover:ring-blue-300 active:scale-[0.99] dark:bg-gray-900 dark:text-gray-300 dark:ring-gray-800 dark:hover:bg-blue-900/20 dark:hover:text-blue-400 dark:hover:ring-blue-700"
                     >
                       <div class="truncate">{{ uploadInfo.url }}</div>
                     </div>
@@ -166,7 +166,7 @@ const copyToClipboard = async (text: string | undefined) => {
                     </div>
                     <div 
                       @click="copyToClipboard(uploadInfo.thumbnailUrl)"
-                      class="cursor-pointer overflow-hidden rounded-xl bg-gray-50 py-3 pl-10 pr-12 text-sm text-gray-600 ring-1 ring-gray-200 transition-all hover:bg-purple-50 hover:text-purple-700 hover:ring-purple-300 active:scale-[0.99] dark:bg-gray-900 dark:text-gray-300 dark:ring-gray-800 dark:hover:bg-purple-900/20 dark:hover:text-purple-400 dark:hover:ring-purple-700"
+                      class="flex min-h-[3rem] cursor-pointer items-center overflow-hidden rounded-xl bg-gray-50 py-3 pl-10 pr-12 text-sm text-gray-600 ring-1 ring-gray-200 transition-all hover:bg-purple-50 hover:text-purple-700 hover:ring-purple-300 active:scale-[0.99] dark:bg-gray-900 dark:text-gray-300 dark:ring-gray-800 dark:hover:bg-purple-900/20 dark:hover:text-purple-400 dark:hover:ring-purple-700"
                     >
                       <div class="truncate">{{ uploadInfo.thumbnailUrl }}</div>
                     </div>
@@ -186,7 +186,7 @@ const copyToClipboard = async (text: string | undefined) => {
                   
                   <div 
                     @click="copyToClipboard(uploadInfo.urlOriginal)"
-                    class="group flex cursor-pointer items-center justify-between rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-700 dark:text-gray-500 dark:hover:border-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+                    class="group flex min-h-[2.5rem] cursor-pointer items-center justify-between rounded-lg border border-dashed border-gray-200 px-3 py-2 text-sm text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-700 dark:text-gray-500 dark:hover:border-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
                   >
                     <span class="truncate">{{ uploadInfo.urlOriginal }}</span>
                     <Copy class="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
@@ -195,7 +195,7 @@ const copyToClipboard = async (text: string | undefined) => {
                   <div 
                     v-if="uploadInfo.thumbnailOriginalUrl"
                     @click="copyToClipboard(uploadInfo.thumbnailOriginalUrl)"
-                    class="group flex cursor-pointer items-center justify-between rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-700 dark:text-gray-500 dark:hover:border-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+                    class="group flex min-h-[2.5rem] cursor-pointer items-center justify-between rounded-lg border border-dashed border-gray-200 px-3 py-2 text-sm text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-700 dark:text-gray-500 dark:hover:border-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
                   >
                     <span class="truncate">{{ uploadInfo.thumbnailOriginalUrl }}</span>
                     <Copy class="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
