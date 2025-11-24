@@ -35,7 +35,7 @@ app.post('/auth/verify', (req, res) => {
   // 获取环境变量中的密码
   const sysPassword = process.env.SITE_PASSWORD
 
-  // 如果未设置环境变量，默认开放访问（或者你可以改为返回错误）
+  // 如果未设置环境变量，默认开放访问
   if (!sysPassword) {
     return res.json(reply(0, '未设置密码，开放访问', { token: 'open-access' }))
   }
@@ -62,6 +62,7 @@ app.post('/admin/delete', (req, res) => {
   res.json(reply(0, '删除成功', null))
 })
 
+// 代理路由保持不变，它自然会响应 /api/img/... 的请求
 app.get('/img/*path', createProxyHandler(BASE_URL, requestConfig))
 
 app.post(
@@ -86,10 +87,18 @@ app.post(
         fileName: mainFile.originalname,
       })
 
-      const baseUrl = process.env.BASE_IMG_URL
+      // [修改点 1] 处理 Base URL 拼接
+      let baseUrl = process.env.BASE_IMG_URL || ''
+      // 移除末尾可能存在的斜杠，保证格式统一
+      if (baseUrl.endsWith('/')) {
+        baseUrl = baseUrl.slice(0, -1)
+      }
 
       const mainImgPath = extractImagePath(mainResult.url)
-      const mainUrl = baseUrl + mainImgPath
+      
+      // [修改点 2] 强制拼接 /api/img/ 路径
+      // 结果形如: https://你的域名.com/api/img/文件名.webp
+      const mainUrl = `${baseUrl}/api/img/${mainImgPath}`
 
       let thumbnailUrl = null
       let thumbnailAssets = null
@@ -102,12 +111,12 @@ app.post(
         })
 
         const thumbnailImgPath = extractImagePath(thumbnailResult.url)
-        thumbnailUrl = baseUrl + thumbnailImgPath
+        // [修改点 3] 缩略图也同样强制拼接
+        thumbnailUrl = `${baseUrl}/api/img/${thumbnailImgPath}`
         thumbnailAssets = thumbnailResult.assets
       }
 
       // 保存上传记录
-      // 使用 Node.js 内置 crypto.randomUUID()
       const record: ImageRecord = {
         id: crypto.randomUUID(),
         name: mainFile.originalname,
