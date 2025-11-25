@@ -1,91 +1,140 @@
 /**
- * 上传文件到 CNB 对象存储
- * @param {object} param0 - 上传参数
- * @param {Buffer} param0.fileBuffer - 文件的 Buffer
- * @param {string} param0.fileName - 文件名
- * @param {string} [param0.type='imgs'] - 上传类型，默认为 'imgs'
- * @returns 上传结果包含资源信息和URL
+ * CNB Generic Packages (制品库) 工具类
+ * 文档参考: https://docs.cnb.cool/zh/artifacts/generic_packages.html
  */
-async function uploadToCnb({ fileBuffer, fileName, type = 'imgs' }) {
-  const fileSize = fileBuffer.length
-  const metaUrl = `https://api.cnb.cool/${process.env.SLUG_IMG}/-/upload/${type}`
 
-  const metaResp = await fetch(metaUrl, {
-    method: 'POST',
+// 定义包名和版本，类似于 S3 的 Bucket 概念
+const PACKAGE_NAME = 'imgbed-assets'
+const PACKAGE_VERSION = 'v1'
+
+/**
+ * 上传文件到 CNB 通用制品库
+ * @param {object} param0
+ * @param {Buffer} param0.fileBuffer - 文件内容
+ * @param {string} param0.fileName - 文件名 (建议使用 UUID.ext 格式以避免冲突)
+ */
+async function uploadToCnb({ fileBuffer, fileName }) {
+  const slug = process.env.SLUG_IMG // 格式如: user/repo
+  // 构造制品库上传 API URL
+  const url = `https://api.cnb.cool/${slug}/-/packages/generic/${PACKAGE_NAME}/${PACKAGE_VERSION}/${fileName}`
+
+  const resp = await fetch(url, {
+    method: 'PUT',
     headers: {
       Authorization: `Bearer ${process.env.TOKEN_IMG}`,
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/octet-stream',
     },
-    body: JSON.stringify({ name: fileName, size: fileSize }),
-  })
-
-  if (!metaResp.ok) {
-    throw new Error('Failed to get upload metadata')
-  }
-
-  const { assets, upload_url } = await metaResp.json()
-
-  const uploadResp = await fetch(upload_url, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/octet-stream' },
     body: fileBuffer,
   })
 
-  if (!uploadResp.ok) {
-    throw new Error('Failed to upload image')
+  if (!resp.ok) {
+    const errText = await resp.text()
+    throw new Error(`CNB Upload Failed: ${resp.status} - ${errText}`)
   }
 
-  return { assets, url: assets['path'] }
+  // 制品库返回的结构不同，我们构造一个标准返回
+  return {
+    // 这里的 path 只是为了兼容旧逻辑，实际上我们会在 default.ts 里自己拼接
+    path: `/${fileName}`, 
+    filename: fileName
+  }
 }
 
 /**
- * 创建代理处理函数
- * @param {string} baseUrl 基础URL
- * @param {object} requestConfig 请求配置
- * @returns 路由处理函数
+ * 从 CNB 通用制品库物理删除文件
+ * @param {string} fileName - 要删除的文件名
+ */
+async function deleteFromCnb(fileName) {
+  const slug = process.env.SLUG_IMG
+  const url = `https://api.cnb.cool/${slug}/-/packages/generic/${PACKAGE_NAME}/${PACKAGE_VERSION}/${fileName}`
+
+  const resp = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${process.env.TOKEN_IMG}`,
+    },
+  })
+
+  if (!resp.ok && resp.status !== 404) {
+    // 404 也可以视为删除成功（文件本来就不在）
+    const errText = await resp.text()
+    throw new Error(`CNB Delete Failed: ${resp.status} - ${errText}`)
+  }
+
+  return true
+}
+
+/**
+ * 创建代理处理函数 (针对制品库下载链接)
+ * @param {string} baseUrl - 制品库的基础读取路径
+ * @param {object} requestConfig 
  */
 function createProxyHandler(baseUrl, requestConfig) {
   return async (req, res) => {
     try {
-      const urlPath = Array.isArray(req.params.path) ? req.params.path.join('/') : req.params.path
-
+      const urlPath = req.params.path
       if (!urlPath || urlPath.includes('..')) {
         return res.status(400).json({ error: 'Invalid image path' })
       }
 
+      // 构造目标 URL
       const targetUrl = new URL(urlPath, baseUrl).toString()
 
       const fetchOptions = {
         method: 'GET',
         headers: requestConfig?.headers || {},
-        signal: requestConfig?.timeout ? AbortSignal.timeout(requestConfig.timeout) : undefined,
+        // 转发 range 头支持视频拖动或断点续传
+        ...(req.headers.range && { headers: { ...requestConfig?.headers, Range: req.headers.range } })
       }
 
       const response = await fetch(targetUrl, fetchOptions)
 
       if (response.ok) {
-        const contentType = response.headers.get('content-type') || 'image/png'
-        const arrayBuffer = await response.arrayBuffer()
+        // 透传 Content-Type 和 Content-Length
+        const contentType = response.headers.get('content-type')
+        const contentLength = response.headers.get('content-length')
+        
+        if (contentType) res.setHeader('Content-Type', contentType)
+        if (contentLength) res.setHeader('Content-Length', contentLength)
+        
+        // 设置强缓存，因为制品库文件通常不会变
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
 
-        res.setHeader('Content-Type', contentType)
-        res.send(Buffer.from(arrayBuffer))
-      } else {
-        res.status(response.status).json({
-          error: `Upstream error: ${response.statusText}`,
+        // 使用流式传输，性能更好
+        const reader = response.body.getReader()
+        const stream = new ReadableStream({
+          start(controller) {
+            return pump()
+            function pump() {
+              return reader.read().then(({ done, value }) => {
+                if (done) {
+                  controller.close()
+                  return
+                }
+                controller.enqueue(value)
+                return pump()
+              })
+            }
+          }
         })
+        
+        // Node.js 环境下将 Web Stream 转为 Node Stream
+        const { Readable } = await import('stream')
+        // @ts-ignore
+        Readable.fromWeb(stream).pipe(res)
+      } else {
+        if (response.status === 404) {
+           return res.status(404).send('Not Found')
+        }
+        res.status(response.status).json({ error: `Upstream error: ${response.statusText}` })
       }
     } catch (e) {
       console.error(`❌ [Proxy Error] ${e.message}`)
-      if (e.name === 'TimeoutError' || e.name === 'AbortError') {
-        return res.status(504).json({ error: 'Upstream request timed out' })
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error' })
       }
-      if (e instanceof TypeError && e.message.includes('fetch')) {
-        return res.status(502).json({ error: 'Failed to fetch from upstream' })
-      }
-      return res.status(500).json({ error: 'Internal server error' })
     }
   }
 }
 
-export { uploadToCnb, createProxyHandler }
-
+export { uploadToCnb, deleteFromCnb, createProxyHandler, PACKAGE_NAME, PACKAGE_VERSION }
