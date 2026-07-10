@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import axios from 'axios'
+import axios from '@/utils/axios'
 import { LockKeyhole } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { toast } from 'vue-sonner'
@@ -16,7 +16,7 @@ const handleLogin = async () => {
 
   loading.value = true
   try {
-    const { data } = await axios.post('/api/auth/verify', {
+    const { data } = await axios.post('/auth/verify', {
       password: password.value,
     })
 
@@ -29,6 +29,7 @@ const handleLogin = async () => {
       toast.error(data.msg || '口令错误，请重新输入')
     }
   } catch (error: any) {
+    console.error('Login error:', error)
     if (error.response && error.response.status === 403) {
       toast.error('口令错误，请重新输入')
     } else {
