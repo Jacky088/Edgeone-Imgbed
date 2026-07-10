@@ -47,13 +47,31 @@ async function uploadToCnb({ fileBuffer, fileName, type = 'imgs' }) {
 function createProxyHandler(baseUrl, requestConfig) {
   return async (req, res) => {
     try {
-      const urlPath = Array.isArray(req.params.path) ? req.params.path.join('/') : req.params.path
+      // EdgeOne Maker 环境兼容：尝试多种方式获取路径
+      let urlPath = ''
+
+      // 方式1: 从 params.path 获取（标准 Express）
+      if (req.params.path) {
+        urlPath = Array.isArray(req.params.path) ? req.params.path.join('/') : req.params.path
+      }
+
+      // 方式2: 从 req.path 或 req.url 提取（EdgeOne 环境）
+      if (!urlPath) {
+        const fullPath = req.path || req.url || ''
+        // 移除 /api/img/ 前缀
+        const match = fullPath.match(/\/img\/(.+)/)
+        if (match) {
+          urlPath = match[1]
+        }
+      }
 
       if (!urlPath || urlPath.includes('..')) {
+        console.error('❌ [Proxy] Invalid path:', { params: req.params, path: req.path, url: req.url })
         return res.status(400).json({ error: 'Invalid image path' })
       }
 
       const targetUrl = new URL(urlPath, baseUrl).toString()
+      console.log(`🔄 [Proxy] ${req.path || req.url} -> ${targetUrl}`)
 
       const fetchOptions = {
         method: 'GET',
@@ -68,8 +86,10 @@ function createProxyHandler(baseUrl, requestConfig) {
         const arrayBuffer = await response.arrayBuffer()
 
         res.setHeader('Content-Type', contentType)
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
         res.send(Buffer.from(arrayBuffer))
       } else {
+        console.error(`❌ [Proxy] Upstream error: ${response.status} ${response.statusText}`)
         res.status(response.status).json({
           error: `Upstream error: ${response.statusText}`,
         })
