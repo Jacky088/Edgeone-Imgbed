@@ -81,7 +81,8 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import axios, { type AxiosProgressEvent } from '@/utils/axios'
+import axios from '@/utils/axios'
+import type { AxiosProgressEvent } from 'axios'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { toast } from 'vue-sonner'
