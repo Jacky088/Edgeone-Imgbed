@@ -116,10 +116,19 @@ const copyToClipboard = async (text: string | undefined) => {
               
               <div class="flex flex-col items-center justify-center gap-4 lg:col-span-4 lg:border-r lg:border-gray-100 lg:pr-8 lg:dark:border-gray-800">
                 <div class="group relative aspect-square w-full max-w-[280px] overflow-hidden rounded-2xl border-4 border-white bg-gray-100 shadow-2xl transition-transform hover:scale-105 dark:border-gray-800 dark:bg-gray-900">
-                  <img 
-                    :src="uploadInfo.thumbnailUrl || uploadInfo.url" 
-                    class="h-full w-full object-cover" 
+                  <img
+                    :src="uploadInfo.thumbnailUrl || uploadInfo.url"
+                    class="h-full w-full object-cover"
                     alt="Uploaded Preview"
+                    @error="(e) => {
+                      console.error('图片加载失败，尝试备用链接');
+                      const img = e.target as HTMLImageElement;
+                      if (img.src === uploadInfo.thumbnailUrl) {
+                        img.src = uploadInfo.url || '';
+                      } else if (img.src === uploadInfo.url) {
+                        img.src = uploadInfo.urlOriginal || '';
+                      }
+                    }"
                   />
                   <div class="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/20">
                     <a :href="uploadInfo.url" target="_blank" class="translate-y-4 opacity-0 transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100">
