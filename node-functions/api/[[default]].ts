@@ -4,8 +4,82 @@ import { reply } from './_reply'
 import { store, type ImageRecord } from './_store'
 import multer from 'multer'
 
-const upload = multer()
+const upload = multer({
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB 限制
+    files: 2, // 最多 2 个文件（主图 + 缩略图）
+  },
+  fileFilter: (req, file, cb) => {
+    // 只允许图片类型
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true)
+    } else {
+      cb(new Error('只允许上传图片文件'))
+    }
+  },
+})
 const app = express()
+
+// 简单的速率限制器（内存版）
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>()
+
+function rateLimiter(maxRequests: number = 20, windowMs: number = 60000) {
+  return (req: any, res: any, next: any) => {
+    const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown'
+    const now = Date.now()
+
+    const record = rateLimitMap.get(ip)
+
+    if (!record || now > record.resetTime) {
+      // 新记录或已过期
+      rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs })
+      return next()
+    }
+
+    if (record.count >= maxRequests) {
+      return res.status(429).json(reply(429, '请求过于频繁，请稍后再试', null))
+    }
+
+    record.count++
+    next()
+  }
+}
+
+// 清理过期的速率限制记录
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, record] of rateLimitMap.entries()) {
+    if (now > record.resetTime) {
+      rateLimitMap.delete(ip)
+    }
+  }
+}, 60000) // 每分钟清理一次
+
+// 身份验证中间件
+function authMiddleware(req: any, res: any, next: any) {
+  const sysPassword = process.env.SITE_PASSWORD
+
+  // 如果未设置密码，则不需要验证
+  if (!sysPassword) {
+    return next()
+  }
+
+  // 检查 Authorization header
+  const authHeader = req.headers.authorization
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json(reply(401, '未授权访问', null))
+  }
+
+  const token = authHeader.substring(7)
+
+  // 简单的 token 验证（生产环境应使用 JWT 或类似方案）
+  if (token === 'authorized') {
+    return next()
+  }
+
+  return res.status(401).json(reply(401, '无效的访问令牌', null))
+}
 
 const requestConfig = {
   responseType: 'arraybuffer',
@@ -18,7 +92,25 @@ const requestConfig = {
 const BASE_URL = 'https://cnb.cool/' + process.env.SLUG_IMG + '/-/imgs/'
 
 // 解析 JSON body
-app.use(express.json())
+app.use(express.json({ limit: '1mb' })) // 限制 JSON body 大小
+
+// 安全头中间件
+app.use((req, res, next) => {
+  // 防止点击劫持
+  res.setHeader('X-Frame-Options', 'DENY')
+  // 防止 MIME 类型嗅探
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  // XSS 保护
+  res.setHeader('X-XSS-Protection', '1; mode=block')
+  // HTTPS 强制
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  // 内容安全策略
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; img-src 'self' https: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';"
+  )
+  next()
+})
 
 // 全局中间件处理所有请求
 app.use((req, res, next) => {
@@ -55,14 +147,14 @@ app.post('/auth/verify', (req, res) => {
   }
 })
 
-// 管理接口：获取图片列表
-app.get('/admin/list', (req, res) => {
+// 管理接口：获取图片列表（需要身份验证）
+app.get('/admin/list', authMiddleware, (req, res) => {
   const list = store.getAll()
   res.json(reply(0, '获取成功', list))
 })
 
-// 管理接口：删除图片 (仅删除记录)
-app.post('/admin/delete', (req, res) => {
+// 管理接口：删除图片 (仅删除记录，需要身份验证)
+app.post('/admin/delete', authMiddleware, (req, res) => {
   const { id } = req.body
   if (!id) return res.status(400).json(reply(1, 'ID不能为空', null))
 
@@ -72,6 +164,8 @@ app.post('/admin/delete', (req, res) => {
 
 app.post(
   '/upload/img',
+  rateLimiter(10, 60000), // 每分钟最多 10 次上传
+  authMiddleware, // 添加身份验证
   upload.fields([
     { name: 'file', maxCount: 1 },
     { name: 'thumbnail', maxCount: 1 },
@@ -85,6 +179,22 @@ app.post(
 
       const mainFile = files.file?.[0]
       const thumbnailFile = files.thumbnail?.[0]
+
+      // 验证文件类型
+      const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+      if (!allowedMimes.includes(mainFile.mimetype)) {
+        return res.status(400).json(reply(1, '不支持的文件类型', ''))
+      }
+
+      // 验证文件名，防止路径遍历
+      const sanitizeFilename = (filename: string) => {
+        return filename.replace(/[^a-zA-Z0-9._-]/g, '_')
+      }
+
+      mainFile.originalname = sanitizeFilename(mainFile.originalname)
+      if (thumbnailFile) {
+        thumbnailFile.originalname = sanitizeFilename(thumbnailFile.originalname)
+      }
 
       // 上传主图
       const mainResult = await uploadToCnb({
@@ -100,7 +210,7 @@ app.post(
       }
 
       const mainImgPath = extractImagePath(mainResult.url)
-      
+
       // [修改点 2] 强制拼接 /api/img/ 路径
       // 结果形如: https://你的域名.com/api/img/文件名.webp
       const mainUrl = `${baseUrl}/api/img/${mainImgPath}`
@@ -142,7 +252,7 @@ app.post(
           hasThumbnail: !!thumbnailFile,
         }),
       )
-    } catch (err) {
+    } catch (err: any) {
       console.error('上传失败:', err.response?.data || err.message)
       res.status(500).json(reply(1, '上传失败', err.message))
     }
