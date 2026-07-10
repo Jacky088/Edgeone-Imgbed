@@ -6,7 +6,15 @@
  * @param {string} [param0.type='imgs'] - 上传类型，默认为 'imgs'
  * @returns 上传结果包含资源信息和URL
  */
-async function uploadToCnb({ fileBuffer, fileName, type = 'imgs' }) {
+async function uploadToCnb({
+  fileBuffer,
+  fileName,
+  type = 'imgs',
+}: {
+  fileBuffer: Buffer
+  fileName: string
+  type?: string
+}) {
   const fileSize = fileBuffer.length
   const metaUrl = `https://api.cnb.cool/${process.env.SLUG_IMG}/-/upload/${type}`
 
@@ -44,8 +52,11 @@ async function uploadToCnb({ fileBuffer, fileName, type = 'imgs' }) {
  * @param {object} requestConfig 请求配置
  * @returns 路由处理函数
  */
-function createProxyHandler(baseUrl, requestConfig) {
-  return async (req, res) => {
+function createProxyHandler(
+  baseUrl: string,
+  requestConfig: { headers?: Record<string, string>; timeout?: number },
+) {
+  return async (req: any, res: any) => {
     try {
       // EdgeOne Maker 环境兼容：尝试多种方式获取路径
       let urlPath = ''
@@ -94,12 +105,13 @@ function createProxyHandler(baseUrl, requestConfig) {
           error: `Upstream error: ${response.statusText}`,
         })
       }
-    } catch (e) {
-      console.error(`❌ [Proxy Error] ${e.message}`)
-      if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+    } catch (e: unknown) {
+      const error = e as Error
+      console.error(`❌ [Proxy Error] ${error.message}`)
+      if (error.name === 'TimeoutError' || error.name === 'AbortError') {
         return res.status(504).json({ error: 'Upstream request timed out' })
       }
-      if (e instanceof TypeError && e.message.includes('fetch')) {
+      if (error instanceof TypeError && error.message.includes('fetch')) {
         return res.status(502).json({ error: 'Failed to fetch from upstream' })
       }
       return res.status(500).json({ error: 'Internal server error' })
