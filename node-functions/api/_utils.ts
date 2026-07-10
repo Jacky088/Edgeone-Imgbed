@@ -76,9 +76,16 @@ function createProxyHandler(
         }
       }
 
-      if (!urlPath || urlPath.includes('..')) {
+      if (!urlPath || urlPath.includes('..') || urlPath.includes('\\') || urlPath.startsWith('/')) {
         console.error('❌ [Proxy] Invalid path:', { params: req.params, path: req.path, url: req.url })
         return res.status(400).json({ error: 'Invalid image path' })
+      }
+
+      // 额外验证：只允许常见的图片扩展名
+      const allowedExtensions = /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i
+      if (!allowedExtensions.test(urlPath)) {
+        console.error('❌ [Proxy] Forbidden file type:', urlPath)
+        return res.status(403).json({ error: 'Forbidden file type' })
       }
 
       const targetUrl = new URL(urlPath, baseUrl).toString()
