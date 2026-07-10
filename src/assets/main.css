@@ -61,3 +61,36 @@
 .glass-card {
   @apply bg-white/70 dark:bg-gray-900/60 backdrop-blur-xl border border-white/20 dark:border-gray-800/50 shadow-xl;
 }
+
+/* 高级玻璃态卡片 - 更精致的质感 */
+.glass-card-premium {
+  @apply bg-white/80 dark:bg-gray-900/70 backdrop-blur-2xl;
+  background-image: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.05) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+.dark .glass-card-premium {
+  background-image: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.02) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+/* 自定义阴影 */
+.shadow-3xl {
+  box-shadow:
+    0 25px 50px -12px rgba(0, 0, 0, 0.15),
+    0 10px 20px -5px rgba(0, 0, 0, 0.08);
+}
+
+.dark .shadow-3xl {
+  box-shadow:
+    0 25px 50px -12px rgba(0, 0, 0, 0.5),
+    0 10px 20px -5px rgba(0, 0, 0, 0.3);
+}
