@@ -20,8 +20,16 @@ const BASE_URL = 'https://cnb.cool/' + process.env.SLUG_IMG + '/-/imgs/'
 // 解析 JSON body
 app.use(express.json())
 
+// 全局中间件处理所有请求
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`)
+
+  // 如果是图片代理请求，直接处理
+  if (req.url && req.url.startsWith('/img/')) {
+    const handler = createProxyHandler(BASE_URL, requestConfig)
+    return handler(req, res)
+  }
+
   next()
 })
 
@@ -61,10 +69,6 @@ app.post('/admin/delete', (req, res) => {
   store.remove(id)
   res.json(reply(0, '删除成功', null))
 })
-
-// 代理路由 - EdgeOne 兼容的写法
-// 不使用 :path(*) 语法，改用通配符
-app.get('/img/*', createProxyHandler(BASE_URL, requestConfig))
 
 app.post(
   '/upload/img',
