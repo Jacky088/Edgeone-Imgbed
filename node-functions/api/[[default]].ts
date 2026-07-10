@@ -149,7 +149,7 @@ app.post(
 /**
  * 从 URL 中提取图片路径
  */
-function extractImagePath(url) {
+function extractImagePath(url: string): string {
   if (url.includes('-/imgs/')) {
     return url.split('-/imgs/')[1]
   } else if (url.includes('-/files/')) {
