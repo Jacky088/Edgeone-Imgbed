@@ -62,9 +62,8 @@ app.post('/admin/delete', (req, res) => {
   res.json(reply(0, '删除成功', null))
 })
 
-// 代理路由 - 支持 EdgeOne Maker 环境
-// 使用多种路由模式确保兼容性
-app.get('/img/:path(*)', createProxyHandler(BASE_URL, requestConfig))
+// 代理路由 - EdgeOne 兼容的写法
+// 不使用 :path(*) 语法，改用通配符
 app.get('/img/*', createProxyHandler(BASE_URL, requestConfig))
 
 app.post(
