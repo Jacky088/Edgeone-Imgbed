@@ -121,6 +121,7 @@ const copyToClipboard = async (text: string | undefined) => {
                     class="h-full w-full object-cover"
                     alt="Uploaded Preview"
                     @error="(e) => {
+                      if (!uploadInfo) return;
                       console.error('图片加载失败，尝试备用链接');
                       const img = e.target as HTMLImageElement;
                       if (img.src === uploadInfo.thumbnailUrl) {
