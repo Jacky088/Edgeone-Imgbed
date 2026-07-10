@@ -81,7 +81,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import axios, { type AxiosProgressEvent } from 'axios'
+import axios, { type AxiosProgressEvent } from '@/utils/axios'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { toast } from 'vue-sonner'
@@ -384,7 +384,7 @@ async function uploadFile(): Promise<void> {
       formData.append('thumbnail', thumbnailFile.value)
     }
 
-    const { data } = await axios.post<UploadResponse>('/api/upload/img', formData, {
+    const { data } = await axios.post<UploadResponse>('/upload/img', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: (e: AxiosProgressEvent) => {
         if (e.total) {
