@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import axios from 'axios'
+import axios from '@/utils/axios'
 import { Trash2, ExternalLink, FileImage, AlertCircle, ArrowLeft } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { toast } from 'vue-sonner'
@@ -22,7 +22,7 @@ const loading = ref(false)
 const fetchList = async () => {
   loading.value = true
   try {
-    const { data } = await axios.get('/api/admin/list')
+    const { data } = await axios.get('/admin/list')
     if (data.code === 0) {
       list.value = data.data
     }
@@ -36,7 +36,7 @@ const fetchList = async () => {
 const handleDelete = async (id: string) => {
   if (!confirm('确定要删除这条记录吗？(注意：远程文件可能仍需手动清理)')) return
   try {
-    const { data } = await axios.post('/api/admin/delete', { id })
+    const { data } = await axios.post('/admin/delete', { id })
     if (data.code === 0) {
       toast.success('记录已删除')
       list.value = list.value.filter(item => item.id !== id)
