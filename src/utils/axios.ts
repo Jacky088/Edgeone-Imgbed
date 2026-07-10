@@ -13,6 +13,12 @@ const instance = axios.create({
 // 请求拦截器
 instance.interceptors.request.use(
   (config) => {
+    // 添加身份验证 token
+    const token = sessionStorage.getItem('site_access_token')
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+
     console.log('[Axios] Request:', {
       url: config.url,
       method: config.method,
@@ -48,6 +54,16 @@ instance.interceptors.response.use(
       message: error.message,
       response: error.response?.data,
     })
+
+    // 处理 401 未授权错误
+    if (error.response?.status === 401) {
+      sessionStorage.removeItem('site_access_token')
+      // 如果不在登录页，则跳转到登录页
+      if (window.location.pathname !== '/login') {
+        window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname)}`
+      }
+    }
+
     return Promise.reject(error)
   },
 )
