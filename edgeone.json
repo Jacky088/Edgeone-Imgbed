@@ -1,0 +1,20 @@
+{
+  "$schema": "https://cdn.edgeone.ai/pages/schema.json",
+  "name": "edgeone-imgbed",
+  "build": {
+    "command": "pnpm run build",
+    "outputDirectory": "dist",
+    "functionsDirectory": "node-functions"
+  },
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "type": "function",
+      "dest": "/api/$1"
+    },
+    {
+      "src": "/(.*)",
+      "type": "static"
+    }
+  ]
+}
