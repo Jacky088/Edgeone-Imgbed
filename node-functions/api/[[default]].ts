@@ -1,7 +1,6 @@
 import express from 'express'
 import { uploadToCnb, createProxyHandler } from './_utils'
 import { reply } from './_reply'
-import { store, type ImageRecord } from './_store'
 import multer from 'multer'
 
 const upload = multer({
@@ -147,21 +146,6 @@ app.post('/auth/verify', (req, res) => {
   }
 })
 
-// 管理接口：获取图片列表（需要身份验证）
-app.get('/admin/list', authMiddleware, (req, res) => {
-  const list = store.getAll()
-  res.json(reply(0, '获取成功', list))
-})
-
-// 管理接口：删除图片 (仅删除记录，需要身份验证)
-app.post('/admin/delete', authMiddleware, (req, res) => {
-  const { id } = req.body
-  if (!id) return res.status(400).json(reply(1, 'ID不能为空', null))
-
-  store.remove(id)
-  res.json(reply(0, '删除成功', null))
-})
-
 app.post(
   '/upload/img',
   rateLimiter(10, 60000), // 每分钟最多 10 次上传
@@ -232,7 +216,7 @@ app.post(
       }
 
       // 保存上传记录
-      const record: ImageRecord = {
+      const record = {
         id: crypto.randomUUID(),
         name: mainFile.originalname,
         url: mainUrl,
@@ -241,7 +225,27 @@ app.post(
         type: mainFile.mimetype,
         createdAt: Date.now(),
       }
-      store.add(record)
+
+      // KV 仅能在 Edge Functions 中访问，因此通过同站点的 Edge Function 保存记录。
+      // 记录保存失败不影响已经完成的图片上传，但会在响应中明确提示。
+      let recordSaved = false
+      try {
+        if (!baseUrl) throw new Error('BASE_IMG_URL 未配置')
+        const recordResponse = await fetch(`${baseUrl}/image-records`, {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer authorized',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(record),
+        })
+        recordSaved = recordResponse.ok
+        if (!recordResponse.ok) {
+          console.error('保存图片记录失败:', await recordResponse.text())
+        }
+      } catch (recordError) {
+        console.error('保存图片记录失败:', recordError)
+      }
 
       res.json(
         reply(0, '上传成功', {
@@ -250,6 +254,7 @@ app.post(
           assets: mainResult.assets,
           thumbnailAssets: thumbnailAssets,
           hasThumbnail: !!thumbnailFile,
+          recordSaved,
         }),
       )
     } catch (err: any) {
