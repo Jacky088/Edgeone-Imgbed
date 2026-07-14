@@ -142,6 +142,7 @@ interface UploadResponse {
     thumbnailAssets?: {
       path: string
     }
+    recordSaved?: boolean
   }
 }
 
@@ -420,7 +421,11 @@ async function uploadFile(): Promise<void> {
     }
     emit('update:uploadInfo', uploadInfo)
 
-    toast.success('上传成功')
+    if (data.data.recordSaved === false) {
+      toast.warning('图片已上传，但链接记录保存失败，请检查 EdgeOne KV 绑定')
+    } else {
+      toast.success('上传成功')
+    }
   } catch (err) {
     console.error(err)
     const error = err as { response?: { data?: { error?: string } }; message?: string }
