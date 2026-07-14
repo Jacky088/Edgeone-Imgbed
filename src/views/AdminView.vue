@@ -22,7 +22,7 @@ const loading = ref(false)
 const fetchList = async () => {
   loading.value = true
   try {
-    const { data } = await axios.get('/admin/list')
+    const { data } = await axios.get('/image-records', { baseURL: '' })
     if (data.code === 0) {
       list.value = data.data
     }
@@ -36,7 +36,10 @@ const fetchList = async () => {
 const handleDelete = async (id: string) => {
   if (!confirm('确定要删除这条记录吗？(注意：远程文件可能仍需手动清理)')) return
   try {
-    const { data } = await axios.post('/admin/delete', { id })
+    const { data } = await axios.delete('/image-records', {
+      baseURL: '',
+      params: { id },
+    })
     if (data.code === 0) {
       toast.success('记录已删除')
       list.value = list.value.filter(item => item.id !== id)
@@ -141,7 +144,7 @@ onMounted(() => {
       
       <div class="mt-6 flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/50 p-4 text-sm text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/10 dark:text-blue-300">
         <AlertCircle class="h-5 w-5 shrink-0 mt-0.5" />
-        <p>注意：由于对象存储 API 限制，目前的“删除”操作仅移除本地的历史记录，不会物理删除远程服务器上的文件。请定期登录 CNB 控制台清理。</p>
+        <p>注意：删除操作仅移除 EdgeOne KV 中的链接记录，不会物理删除 CNB 上的图片文件。请定期登录 CNB 控制台清理。</p>
       </div>
     </div>
   </div>
