@@ -6,7 +6,7 @@
 构建，实现零成本部署与全球 CDN 加速。
 
 ## 页面预览
-![imgbed 预览](./screenshot-preview-pc-imgbed.png)
+![imgbed 预览](./screenshot-preview-pc-imgbed.jpg)
 
 ------------------------------------------------------------------------
 
