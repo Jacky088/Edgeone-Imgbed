@@ -390,13 +390,40 @@ function onDrop(e: DragEvent): void {
   }
 }
 
-// 批量入口：校验 → 建队 → 逐张压缩（压缩失败仅标记该张，不中断批次）
+// 批量入口：校验（超大/重复）→ 建队 → 逐张压缩（压缩失败仅标记该张，不中断批次）
 async function handleFiles(list: File[]): Promise<void> {
   const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-  const valid = list.filter((f) => allowedTypes.includes(f.type))
-  const skipped = list.length - valid.length
+  const images = list.filter((f) => allowedTypes.includes(f.type))
+  const skipped = list.length - images.length
   if (skipped > 0) {
     toast.warning(`已跳过 ${skipped} 个非图片文件`)
+  }
+  if (images.length === 0) return
+
+  // 拦截超大文件：压缩前直接拒绝并明确告知上限
+  const oversize = images.filter((f) => f.size > 5 * 1024 * 1024)
+  if (oversize.length > 0) {
+    const extra = oversize.length > 1 ? `（已跳过 ${oversize.length} 张超大图片）` : `（「${oversize[0]?.name}」已被跳过）`
+    toast.warning(`最大只允许5MB的图片上传！${extra}`)
+  }
+
+  // 批内同名/重复判重：NFC 规范化 + 小写对比
+  // 覆盖：同一文件拖两次、大小写变体（Windows 文件名不区分大小写，压缩后同名）、Unicode 组合形式差异
+  const seen = new Set<string>()
+  const dupNames: string[] = []
+  const valid = images.filter((f) => {
+    if (f.size > 5 * 1024 * 1024) return false
+    const key = f.name.normalize('NFC').toLowerCase()
+    if (seen.has(key)) {
+      dupNames.push(f.name)
+      return false
+    }
+    seen.add(key)
+    return true
+  })
+  if (dupNames.length > 0) {
+    const shown = dupNames.slice(0, 3).join('、')
+    toast.warning(`已跳过 ${dupNames.length} 个重复/同名文件：${shown}${dupNames.length > 3 ? ' 等' : ''}`)
   }
   if (valid.length === 0) return
 
@@ -426,9 +453,6 @@ async function handleFiles(list: File[]): Promise<void> {
     processingIndex.value = i + 1
     t.status = 'processing'
     try {
-      if (t.rawSize > 5 * 1024 * 1024) {
-        throw new Error('图片大小不能超过 5MB')
-      }
       const { compressedFile, width, height } = await compressImageToWebp(
         t.rawFile,
         props.quality,
