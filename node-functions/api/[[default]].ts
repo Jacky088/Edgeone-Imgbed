@@ -82,7 +82,7 @@ app.post('/auth/verify', rateLimiter(5, 60000), (req, res) => {
 
 app.post(
   '/upload/img',
-  rateLimiter(10, 60000), // 每分钟最多 10 次上传
+  rateLimiter(30, 60000), // 每分钟最多 30 次上传（批量上传场景）
   authMiddleware, // 添加身份验证
   upload.fields([
     { name: 'file', maxCount: 1 },
@@ -112,14 +112,27 @@ app.post(
         return res.status(400).json(reply(1, '缩略图内容不是有效的图片', ''))
       }
 
-      // 验证文件名，防止路径遍历
-      const sanitizeFilename = (filename: string) => {
-        return filename.replace(/[^a-zA-Z0-9._-]/g, '_')
+      // 修复 multer/busboy 将 UTF-8 文件名按 latin1 解码导致的中文乱码
+      const fixMulterFilename = (name: string): string => {
+        try {
+          const decoded = Buffer.from(name, 'latin1').toString('utf8')
+          // 解码失败（出现替换符）则保留原名
+          if (decoded && !decoded.includes('\uFFFD')) return decoded
+        } catch {
+          // ignore
+        }
+        return name
       }
 
-      mainFile.originalname = sanitizeFilename(mainFile.originalname)
+      // 验证文件名，防止路径遍历：保留 Unicode 字母数字（含中文），其余替换为下划线
+      const sanitizeFilename = (filename: string) => {
+        const cleaned = filename.replace(/[^\p{L}\p{N}._-]/gu, '_')
+        return cleaned.length > 100 ? cleaned.slice(0, 100) : cleaned
+      }
+
+      mainFile.originalname = sanitizeFilename(fixMulterFilename(mainFile.originalname))
       if (thumbnailFile) {
-        thumbnailFile.originalname = sanitizeFilename(thumbnailFile.originalname)
+        thumbnailFile.originalname = sanitizeFilename(fixMulterFilename(thumbnailFile.originalname))
       }
 
       // 上传主图

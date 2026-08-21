@@ -8,12 +8,20 @@ import { toast } from 'vue-sonner'
 
 const router = useRouter()
 
-const uploadInfo = ref<{
+// 批量上传：逐张收集上传结果
+interface UploadResult {
   url: string
   thumbnailUrl?: string
   urlOriginal?: string
   thumbnailOriginalUrl?: string
-} | null>(null)
+  name?: string
+}
+
+const results = ref<UploadResult[]>([])
+
+const handleUploadSuccess = (info: UploadResult) => {
+  results.value.push(info)
+}
 
 const handleLogout = () => {
   sessionStorage.removeItem('site_access_token')
@@ -44,7 +52,7 @@ const copyToClipboard = async (text: string | undefined) => {
             <div class="absolute inset-0 rounded-xl bg-gradient-to-t from-black/10 to-transparent"></div>
           </div>
           <span class="bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 bg-clip-text text-xl font-bold tracking-tight text-transparent dark:from-white dark:via-gray-200 dark:to-white">
-            ImgBed
+            CNB 图床
           </span>
         </div>
 
@@ -78,7 +86,7 @@ const copyToClipboard = async (text: string | undefined) => {
       <!-- 精致标题区 -->
       <div class="mb-12 text-center">
         <h1 class="mb-5 bg-gradient-to-r from-gray-900 via-blue-700 to-purple-700 bg-clip-text text-5xl font-black tracking-tight text-transparent dark:from-white dark:via-blue-300 dark:to-purple-300 sm:text-6xl">
-          极速图床，云端存储
+          CNB 图床，云端存储
         </h1>
         <p class="text-lg font-light text-gray-600 dark:text-gray-400 sm:text-xl">
           基于 <span class="font-medium text-gray-800 dark:text-gray-300">Serverless</span> 构建，自动压缩，全球 CDN 加速
@@ -90,7 +98,7 @@ const copyToClipboard = async (text: string | undefined) => {
         <!-- 上传组件 - 更精致的卡片 -->
         <div class="glass-card-premium mx-auto max-w-2xl overflow-hidden rounded-3xl p-8 shadow-2xl shadow-blue-500/5 ring-1 ring-white/20 dark:shadow-blue-500/10 dark:ring-white/5">
           <FileUploader
-            v-model:uploadInfo="uploadInfo"
+            @update:uploadInfo="handleUploadSuccess"
             :maxHeight="5000"
             :maxWidth="5000"
             :quality="0.7"
@@ -109,15 +117,16 @@ const copyToClipboard = async (text: string | undefined) => {
           leave-from-class="opacity-100 translate-y-0 scale-100"
           leave-to-class="opacity-0 translate-y-8 scale-95"
         >
-          <div v-if="uploadInfo" class="glass-card-premium overflow-hidden rounded-3xl shadow-2xl shadow-blue-500/5 ring-1 ring-white/20 dark:shadow-blue-500/10 dark:ring-white/5">
+          <div v-if="results.length" class="space-y-10">
+          <div v-for="(info, idx) in results" :key="idx" class="glass-card-premium overflow-hidden rounded-3xl shadow-2xl shadow-blue-500/5 ring-1 ring-white/20 dark:shadow-blue-500/10 dark:ring-white/5">
             <!-- 精致头部 -->
             <div class="relative flex items-center gap-3 border-b border-gray-100/80 bg-gradient-to-r from-white/80 via-white/60 to-white/80 px-6 py-5 backdrop-blur-sm dark:border-gray-800/50 dark:from-gray-900/80 dark:via-gray-900/60 dark:to-gray-900/80">
               <div class="relative flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-green-400 to-emerald-600 shadow-lg shadow-green-500/30">
                 <div class="h-3.5 w-3.5 animate-pulse rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,0.8)]"></div>
               </div>
-              <div>
-                <h3 class="text-lg font-bold text-gray-900 dark:text-white">上传成功</h3>
-                <p class="text-xs text-gray-500 dark:text-gray-400">图片已处理并上传至云端</p>
+              <div class="min-w-0 flex-1">
+                <h3 class="text-lg font-bold text-gray-900 dark:text-white">上传成功<span v-if="results.length > 1" class="ml-1.5 text-sm font-medium text-gray-400">({{ idx + 1 }}/{{ results.length }})</span></h3>
+                <p class="truncate text-xs text-gray-500 dark:text-gray-400" :title="info.name">{{ info.name || '图片已处理并上传至云端' }}</p>
               </div>
             </div>
 
@@ -132,23 +141,22 @@ const copyToClipboard = async (text: string | undefined) => {
                   <!-- 图片容器 -->
                   <div class="relative h-full overflow-hidden rounded-2xl border-4 border-white bg-gradient-to-br from-gray-50 to-gray-100 shadow-2xl ring-1 ring-gray-900/5 transition-all duration-500 group-hover:scale-[1.02] group-hover:shadow-3xl dark:border-gray-700 dark:from-gray-900 dark:to-gray-800 dark:ring-white/5">
                     <img
-                      :src="uploadInfo.thumbnailUrl || uploadInfo.url"
+                      :src="info.thumbnailUrl || info.url"
                       class="h-full w-full object-cover"
                       alt="Uploaded Preview"
                       @error="(e) => {
-                        if (!uploadInfo) return;
                         console.error('图片加载失败，尝试备用链接');
                         const img = e.target as HTMLImageElement;
-                        if (img.src === uploadInfo.thumbnailUrl) {
-                          img.src = uploadInfo.url || '';
-                        } else if (img.src === uploadInfo.url) {
-                          img.src = uploadInfo.urlOriginal || '';
+                        if (img.src === info.thumbnailUrl) {
+                          img.src = info.url || '';
+                        } else if (img.src === info.url) {
+                          img.src = info.urlOriginal || '';
                         }
                       }"
                     />
                     <!-- 悬浮遮罩 -->
                     <div class="absolute inset-0 flex items-center justify-center bg-gradient-to-t from-black/60 via-black/0 to-black/0 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-                      <a :href="uploadInfo.url" target="_blank" class="translate-y-6 transition-all duration-300 group-hover:translate-y-0">
+                      <a :href="info.url" target="_blank" class="translate-y-6 transition-all duration-300 group-hover:translate-y-0">
                         <div class="flex items-center gap-2.5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-gray-900 shadow-2xl ring-1 ring-gray-900/5 backdrop-blur-sm transition-all hover:scale-105 hover:bg-white/95">
                           <ImageIcon class="h-4 w-4" />
                           查看原图
@@ -181,13 +189,13 @@ const copyToClipboard = async (text: string | undefined) => {
                       <LinkIcon class="h-4 w-4" />
                     </div>
                     <div
-                      @click="copyToClipboard(uploadInfo.url)"
+                      @click="copyToClipboard(info.url)"
                       class="flex min-h-[3.25rem] cursor-pointer items-center overflow-hidden rounded-xl bg-gradient-to-r from-gray-50 to-gray-50/50 py-3.5 pl-12 pr-14 text-sm font-medium text-gray-700 ring-1 ring-gray-200 transition-all hover:from-blue-50 hover:to-blue-50/50 hover:text-blue-700 hover:ring-blue-300 hover:shadow-md active:scale-[0.99] dark:from-gray-900 dark:to-gray-900/50 dark:text-gray-200 dark:ring-gray-800 dark:hover:from-blue-900/30 dark:hover:to-blue-900/20 dark:hover:text-blue-300 dark:hover:ring-blue-700"
                     >
-                      <div class="truncate">{{ uploadInfo.url }}</div>
+                      <div class="truncate">{{ info.url }}</div>
                     </div>
                     <button
-                      @click="copyToClipboard(uploadInfo.url)"
+                      @click="copyToClipboard(info.url)"
                       class="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg text-gray-400 transition-all hover:bg-white hover:text-blue-600 hover:shadow-sm dark:hover:bg-gray-800 dark:hover:text-blue-400"
                     >
                       <Copy class="h-4 w-4" />
@@ -195,18 +203,18 @@ const copyToClipboard = async (text: string | undefined) => {
                   </div>
 
                   <!-- 缩略图链接 -->
-                  <div v-if="uploadInfo.thumbnailUrl" class="group relative">
+                  <div v-if="info.thumbnailUrl" class="group relative">
                     <div class="absolute left-4 top-1/2 z-10 -translate-y-1/2 text-gray-400">
                       <ImageIcon class="h-4 w-4" />
                     </div>
                     <div
-                      @click="copyToClipboard(uploadInfo.thumbnailUrl)"
+                      @click="copyToClipboard(info.thumbnailUrl)"
                       class="flex min-h-[3.25rem] cursor-pointer items-center overflow-hidden rounded-xl bg-gradient-to-r from-gray-50 to-gray-50/50 py-3.5 pl-12 pr-14 text-sm font-medium text-gray-700 ring-1 ring-gray-200 transition-all hover:from-purple-50 hover:to-purple-50/50 hover:text-purple-700 hover:ring-purple-300 hover:shadow-md active:scale-[0.99] dark:from-gray-900 dark:to-gray-900/50 dark:text-gray-200 dark:ring-gray-800 dark:hover:from-purple-900/30 dark:hover:to-purple-900/20 dark:hover:text-purple-300 dark:hover:ring-purple-700"
                     >
-                      <div class="truncate">{{ uploadInfo.thumbnailUrl }}</div>
+                      <div class="truncate">{{ info.thumbnailUrl }}</div>
                     </div>
                     <button
-                      @click="copyToClipboard(uploadInfo.thumbnailUrl)"
+                      @click="copyToClipboard(info.thumbnailUrl)"
                       class="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg text-gray-400 transition-all hover:bg-white hover:text-purple-600 hover:shadow-sm dark:hover:bg-gray-800 dark:hover:text-purple-400"
                     >
                       <Copy class="h-4 w-4" />
@@ -222,19 +230,19 @@ const copyToClipboard = async (text: string | undefined) => {
                   </h4>
 
                   <div
-                    @click="copyToClipboard(uploadInfo.urlOriginal)"
+                    @click="copyToClipboard(info.urlOriginal)"
                     class="group flex min-h-[2.75rem] cursor-pointer items-center justify-between gap-3 rounded-lg border border-gray-200/60 bg-white/50 px-4 py-2.5 text-xs text-gray-600 transition-all hover:border-gray-300 hover:bg-white hover:text-gray-900 hover:shadow-sm dark:border-gray-700/50 dark:bg-gray-800/30 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                   >
-                    <span class="truncate font-mono">{{ uploadInfo.urlOriginal }}</span>
+                    <span class="truncate font-mono">{{ info.urlOriginal }}</span>
                     <Copy class="h-3.5 w-3.5 flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
                   </div>
 
                   <div
-                    v-if="uploadInfo.thumbnailOriginalUrl"
-                    @click="copyToClipboard(uploadInfo.thumbnailOriginalUrl)"
+                    v-if="info.thumbnailOriginalUrl"
+                    @click="copyToClipboard(info.thumbnailOriginalUrl)"
                     class="group flex min-h-[2.75rem] cursor-pointer items-center justify-between gap-3 rounded-lg border border-gray-200/60 bg-white/50 px-4 py-2.5 text-xs text-gray-600 transition-all hover:border-gray-300 hover:bg-white hover:text-gray-900 hover:shadow-sm dark:border-gray-700/50 dark:bg-gray-800/30 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                   >
-                    <span class="truncate font-mono">{{ uploadInfo.thumbnailOriginalUrl }}</span>
+                    <span class="truncate font-mono">{{ info.thumbnailOriginalUrl }}</span>
                     <Copy class="h-3.5 w-3.5 flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
                   </div>
                 </div>
@@ -242,13 +250,14 @@ const copyToClipboard = async (text: string | undefined) => {
               </div>
             </div>
           </div>
+          </div>
         </Transition>
 
       </div>
     </main>
 
     <footer class="relative z-10 py-8 text-center text-sm text-gray-400 dark:text-gray-600">
-      <p>© {{ new Date().getFullYear() }} ImgBed. Serverless Power.</p>
+      <p>© {{ new Date().getFullYear() }} CNB 图床. Serverless Power.</p>
     </footer>
   </div>
 </template>
