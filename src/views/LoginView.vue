@@ -21,9 +21,12 @@ const handleLogin = async () => {
     })
 
     if (data.code === 0) {
-      sessionStorage.setItem('site_access_token', 'authorized')
+      // 存储服务端签发的动态 token（含 HMAC 签名与过期时间）
+      sessionStorage.setItem('site_access_token', data.data?.token || '')
       toast.success('验证通过')
-      const redirect = (router.currentRoute.value.query.redirect as string) || '/'
+      // 校验 redirect 仅允许站内路径，防止 //evil.com 形式的开放跳转
+      const rawRedirect = (router.currentRoute.value.query.redirect as string) || '/'
+      const redirect = rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/'
       router.replace(redirect)
     } else {
       toast.error(data.msg || '口令错误，请重新输入')

@@ -19,12 +19,15 @@ instance.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`
     }
 
-    console.log('[Axios] Request:', {
-      url: config.url,
-      method: config.method,
-      baseURL: config.baseURL,
-      fullURL: `${config.baseURL}${config.url}`,
-    })
+    // 详细日志仅在开发环境输出，避免生产环境泄露请求数据
+    if (import.meta.env.DEV) {
+      console.log('[Axios] Request:', {
+        url: config.url,
+        method: config.method,
+        baseURL: config.baseURL,
+        fullURL: `${config.baseURL}${config.url}`,
+      })
+    }
     return config
   },
   (error) => {
@@ -36,24 +39,29 @@ instance.interceptors.request.use(
 // 响应拦截器
 instance.interceptors.response.use(
   (response) => {
-    console.log('[Axios] Response:', {
-      url: response.config.url,
-      status: response.status,
-      data: response.data,
-    })
+    // 详细日志（含完整响应数据）仅在开发环境输出
+    if (import.meta.env.DEV) {
+      console.log('[Axios] Response:', {
+        url: response.config.url,
+        status: response.status,
+        data: response.data,
+      })
+    }
     return response
   },
   (error) => {
-    console.error('[Axios] Response Error:', {
-      url: error.config?.url,
-      method: error.config?.method,
-      baseURL: error.config?.baseURL,
-      fullURL: error.config ? `${error.config.baseURL}${error.config.url}` : 'unknown',
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      message: error.message,
-      response: error.response?.data,
-    })
+    console.error('[Axios] Response Error:', error.message)
+    if (import.meta.env.DEV) {
+      console.error('[Axios] Response Error Detail:', {
+        url: error.config?.url,
+        method: error.config?.method,
+        baseURL: error.config?.baseURL,
+        fullURL: error.config ? `${error.config.baseURL}${error.config.url}` : 'unknown',
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        response: error.response?.data,
+      })
+    }
 
     // 处理 401 未授权错误
     if (error.response?.status === 401) {

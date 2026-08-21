@@ -89,7 +89,6 @@ import { toast } from 'vue-sonner'
 import { UploadCloud, XCircle, Loader2, FileImage } from 'lucide-vue-next'
 
 interface Props {
-  belongTo?: string
   maxWidth?: number
   maxHeight?: number
   quality?: number
@@ -142,12 +141,15 @@ interface UploadResponse {
     thumbnailAssets?: {
       path: string
     }
-    recordSaved?: boolean
   }
 }
 
+// 拼接 CNB 源站直链（确保恰好一个斜杠，且 path 缺失时返回空串而非 "undefined"）
+function toCnbUrl(path?: string): string {
+  return path ? `https://cnb.cool/${path.replace(/^\//, '')}` : ''
+}
+
 const props = withDefaults(defineProps<Props>(), {
-  belongTo: 'mindmap',
   maxWidth: 0,
   maxHeight: 0,
   quality: 0.7,
@@ -328,7 +330,11 @@ async function handleFile(f: File | null): Promise<void> {
   if (!f) {
     file.value = null
     thumbnailFile.value = null
-    thumbnailPreview.value = ''
+    // 释放缩略图预览的 objectURL，避免内存泄漏
+    if (thumbnailPreview.value) {
+      URL.revokeObjectURL(thumbnailPreview.value)
+      thumbnailPreview.value = ''
+    }
     return
   }
 
@@ -352,6 +358,8 @@ async function handleFile(f: File | null): Promise<void> {
 
     if (props.generateThumbnail) {
       const thumbnail = await generateThumbnailImage(compressedFile)
+      // 释放上一次的预览 objectURL 后再持有新的
+      if (thumbnailPreview.value) URL.revokeObjectURL(thumbnailPreview.value)
       thumbnailFile.value = thumbnail.thumbnailFile
       thumbnailPreview.value = thumbnail.previewUrl
       thumbnailWidth.value = thumbnail.width
@@ -380,7 +388,6 @@ async function uploadFile(): Promise<void> {
     uploadProgress.value = 0
     const formData = new FormData()
     formData.append('file', file.value)
-    formData.append('belongTo', props.belongTo)
 
     if (props.generateThumbnail && thumbnailFile.value) {
       formData.append('thumbnail', thumbnailFile.value)
@@ -405,9 +412,9 @@ async function uploadFile(): Promise<void> {
 
     const uploadInfo: UploadInfo = {
       url: uploadedUrl.value,
-      urlOriginal: 'https://cnb.cool' + data.data?.assets?.path,
+      urlOriginal: toCnbUrl(data.data?.assets?.path),
       thumbnailUrl: uploadedThumbnailUrl.value,
-      thumbnailOriginalUrl: 'https://cnb.cool' + data.data?.thumbnailAssets?.path,
+      thumbnailOriginalUrl: toCnbUrl(data.data?.thumbnailAssets?.path),
       name: file.value.name,
       size: file.value.size,
       type: file.value.type,
@@ -421,10 +428,26 @@ async function uploadFile(): Promise<void> {
     }
     emit('update:uploadInfo', uploadInfo)
 
-    if (data.data.recordSaved === false) {
-      toast.warning('图片已上传，但链接记录保存失败，请检查 EdgeOne KV 绑定')
-    } else {
+    // 保存上传记录到 KV（原由服务端公网回环调用 Edge Function 保存，
+    // 现改由前端直接写入同站点接口，省去一次公网往返，记录结果一致）
+    try {
+      await axios.post(
+        '/image-records',
+        {
+          id: crypto.randomUUID(),
+          name: file.value.name,
+          url: uploadedUrl.value,
+          thumbnailUrl: uploadedThumbnailUrl.value || undefined,
+          size: file.value.size,
+          type: file.value.type,
+          createdAt: Date.now(),
+        },
+        { baseURL: '' },
+      )
       toast.success('上传成功')
+    } catch (recordError) {
+      console.error('保存上传记录失败:', recordError)
+      toast.warning('图片已上传，但链接记录保存失败，请检查 EdgeOne KV 绑定')
     }
   } catch (err) {
     console.error(err)

@@ -91,7 +91,6 @@ const copyToClipboard = async (text: string | undefined) => {
         <div class="glass-card-premium mx-auto max-w-2xl overflow-hidden rounded-3xl p-8 shadow-2xl shadow-blue-500/5 ring-1 ring-white/20 dark:shadow-blue-500/10 dark:ring-white/5">
           <FileUploader
             v-model:uploadInfo="uploadInfo"
-            belongTo="mindmap"
             :maxHeight="5000"
             :maxWidth="5000"
             :quality="0.7"

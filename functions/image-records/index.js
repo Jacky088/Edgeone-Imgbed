@@ -10,9 +10,53 @@ function json(code, msg, data, status = 200) {
   })
 }
 
-function isAuthorized(request, env) {
+// 与 node-functions/api/_utils.ts 保持一致的密钥派生规则
+function getAuthSecret(env) {
+  return env?.AUTH_SECRET || `imgbed-auth:${env?.SITE_PASSWORD || ''}`
+}
+
+// base64url 解码为二进制字符串
+function b64urlDecode(input) {
+  const normalized = input.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+  return atob(padded)
+}
+
+// 校验 HMAC-SHA256 签名 token 的签名与有效期（与 Node 侧签发逻辑配套）
+async function verifyAuthToken(token, env) {
+  try {
+    const [payload, sig] = token.split('.')
+    if (!payload || !sig) return false
+
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(getAuthSecret(env)),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    )
+    const mac = new Uint8Array(
+      await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload)),
+    )
+    const sigBytes = Uint8Array.from(b64urlDecode(sig), (ch) => ch.charCodeAt(0))
+
+    if (sigBytes.length !== mac.length) return false
+    let diff = 0
+    for (let i = 0; i < mac.length; i++) diff |= sigBytes[i] ^ mac[i]
+    if (diff !== 0) return false
+
+    const data = JSON.parse(b64urlDecode(payload))
+    return typeof data.exp === 'number' && data.exp > Date.now()
+  } catch {
+    return false
+  }
+}
+
+async function isAuthorized(request, env) {
   if (!env?.SITE_PASSWORD) return true
-  return request.headers.get('authorization') === 'Bearer authorized'
+  const auth = request.headers.get('authorization') || ''
+  if (!auth.startsWith('Bearer ')) return false
+  return verifyAuthToken(auth.slice(7), env)
 }
 
 async function listRecords() {
@@ -37,7 +81,7 @@ async function listRecords() {
 
 export async function onRequest({ request, env }) {
   try {
-    if (!isAuthorized(request, env)) {
+    if (!(await isAuthorized(request, env))) {
       return json(401, '未授权访问', null, 401)
     }
 
