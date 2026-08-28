@@ -1,7 +1,7 @@
 <template>
   <div class="w-full transition-all duration-500">
     <label
-      class="group relative flex w-full cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed p-10 text-center transition-all duration-300"
+      class="group relative flex w-full cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed p-6 text-center transition-all duration-300 sm:p-10"
       :class="[
         isDragging
           ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/20 scale-[1.02]'

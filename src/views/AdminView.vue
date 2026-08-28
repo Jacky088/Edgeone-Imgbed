@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import axios from '@/utils/axios'
-import { Trash2, ExternalLink, FileImage, AlertCircle, ArrowLeft } from 'lucide-vue-next'
-import { Button } from '@/components/ui/button'
+import { Trash2, ExternalLink, FileImage, AlertCircle } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
-import ThemeToggle from '@/components/ThemeToggle.vue'
+import AppShell from '@/components/layout/AppShell.vue'
 
 interface ImageRecord {
   id: string
@@ -65,24 +64,18 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="aurora-bg min-h-screen p-6 transition-colors duration-300">
-    <div class="mx-auto max-w-6xl">
-      
-      <div class="mb-8 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <Button variant="ghost" size="icon" @click="$router.push('/')" class="rounded-full hover:bg-white/50 dark:hover:bg-gray-800/50">
-            <ArrowLeft class="h-5 w-5" />
-          </Button>
-          <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">管理后台</h1>
-        </div>
-        <ThemeToggle />
+  <AppShell>
+    <div class="flex flex-col gap-4">
+      <div>
+        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">图片列表</h2>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">管理已上传的链接记录</p>
       </div>
 
       <div class="glass-card overflow-hidden rounded-[2rem]">
         <div v-if="loading" class="p-12 text-center text-gray-500 dark:text-gray-400">
           <div class="animate-pulse">加载数据中...</div>
         </div>
-        
+
         <div v-else-if="list.length === 0" class="flex flex-col items-center justify-center p-20 text-gray-400 dark:text-gray-600">
           <FileImage class="mb-4 h-16 w-16 opacity-20" />
           <p class="text-lg font-medium">暂无上传记录</p>
@@ -103,9 +96,9 @@ onMounted(() => {
               <tr v-for="item in list" :key="item.id" class="hover:bg-blue-50/30 dark:hover:bg-blue-900/10 transition-colors">
                 <td class="px-6 py-4">
                   <div class="h-14 w-14 overflow-hidden rounded-xl border border-gray-200 bg-white p-1 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-                    <img 
-                      :src="item.thumbnailUrl || item.url" 
-                      class="h-full w-full rounded-lg object-cover" 
+                    <img
+                      :src="item.thumbnailUrl || item.url"
+                      class="h-full w-full rounded-lg object-cover"
                       alt="preview"
                     />
                   </div>
@@ -128,7 +121,7 @@ onMounted(() => {
                   {{ formatDate(item.createdAt) }}
                 </td>
                 <td class="px-6 py-4 text-right">
-                  <button 
+                  <button
                     @click="handleDelete(item.id)"
                     class="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 transition dark:text-gray-500 dark:hover:bg-red-900/20 dark:hover:text-red-400"
                     title="删除记录"
@@ -141,11 +134,11 @@ onMounted(() => {
           </table>
         </div>
       </div>
-      
-      <div class="mt-6 flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/50 p-4 text-sm text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/10 dark:text-blue-300">
+
+      <div class="mt-2 flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/50 p-4 text-sm text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/10 dark:text-blue-300">
         <AlertCircle class="h-5 w-5 shrink-0 mt-0.5" />
         <p>注意：删除操作仅移除 EdgeOne KV 中的链接记录，不会物理删除 CNB 上的图片文件。请定期登录 CNB 控制台清理。</p>
       </div>
     </div>
-  </div>
+  </AppShell>
 </template>

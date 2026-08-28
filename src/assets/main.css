@@ -8,6 +8,8 @@
   --color-foreground: var(--foreground);
   /* ... 其他 theme 变量保持默认即可，重点是下面的自定义动画 ... */
   --animate-aurora: aurora 20s linear infinite;
+  /* [新增] 品牌区漂浮小球动画 */
+  --animate-float: float 4s ease-in-out infinite;
 }
 
 :root {
@@ -36,6 +38,12 @@
   33% { background-position: 0% 0%, 100% 100%; }
   66% { background-position: 100% 0%, 0% 100%; }
   100% { background-position: 50% 50%, 50% 50%; }
+}
+
+/* [新增] 品牌区装饰小球浮动动画 */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
 }
 
 .aurora-bg {
