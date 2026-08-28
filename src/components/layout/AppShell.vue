@@ -65,9 +65,13 @@ const handleLogout = () => {
           </div>
         </div>
 
-        <!-- 装饰：云朵 + 浮动小球（纯 CSS） -->
-        <div class="relative hidden h-64 select-none lg:block">
-          <div class="absolute bottom-0 left-1/2 -translate-x-1/2">
+        <!-- 装饰：云朵 + 浮动小球（纯 CSS，动态效果更明显） -->
+        <div class="relative hidden h-72 select-none lg:block">
+          <!-- 底部淡出光晕 -->
+          <div class="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-blue-200/25 to-transparent dark:from-blue-900/25"></div>
+
+          <!-- 云朵，整体缓慢上下浮动 -->
+          <div class="absolute bottom-0 left-1/2 -translate-x-1/2 animate-bob">
             <div class="relative h-24 w-56">
               <div class="absolute bottom-6 left-8 h-16 w-24 rounded-3xl bg-gradient-to-br from-blue-100/80 to-sky-200/60 backdrop-blur dark:from-blue-900/40 dark:to-sky-900/30"></div>
               <div class="absolute bottom-10 left-2 h-12 w-12 rounded-full bg-gradient-to-br from-blue-100/80 to-sky-200/60 backdrop-blur dark:from-blue-900/40 dark:to-sky-900/30"></div>
@@ -79,16 +83,26 @@ const handleLogout = () => {
                 target="_blank"
                 rel="noopener noreferrer"
                 title="在 GitHub 上查看项目"
-                class="absolute bottom-8 left-1/2 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full bg-gradient-to-br from-gray-900 to-gray-700 text-white shadow-lg shadow-gray-900/30 transition-all hover:scale-105 hover:from-gray-800 hover:to-gray-600"
+                class="absolute bottom-8 left-1/2 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full bg-gradient-to-br from-gray-900 to-gray-700 text-white shadow-lg shadow-gray-900/30 transition-all hover:scale-110 hover:from-gray-800 hover:to-gray-600"
               >
                 <Github class="h-7 w-7" />
               </a>
             </div>
           </div>
-          <div class="absolute left-[18%] top-10 h-3 w-3 animate-float rounded-full bg-sky-400/60 blur-[1px]"></div>
-          <div class="absolute left-[70%] top-20 h-4 w-4 animate-float rounded-full bg-emerald-400/50 blur-[1px] [animation-delay:0.6s]"></div>
-          <div class="absolute left-[40%] top-4 h-2.5 w-2.5 animate-float rounded-full bg-violet-400/50 blur-[1px] [animation-delay:1.1s]"></div>
-          <div class="absolute left-[85%] top-6 h-3 w-3 animate-float rounded-full bg-blue-400/50 blur-[1px] [animation-delay:1.6s]"></div>
+
+          <!-- 漂浮小球：更多、更明显（带辉光） -->
+          <div class="absolute left-[5%] top-16 h-4 w-4 animate-float rounded-full bg-sky-400 shadow-[0_0_14px_3px_rgba(56,189,248,0.7)]"></div>
+          <div class="absolute left-[26%] top-3 h-3.5 w-3.5 animate-drift rounded-full bg-emerald-400 shadow-[0_0_12px_3px_rgba(52,211,153,0.7)] [animation-delay:0.5s]"></div>
+          <div class="absolute left-[74%] top-12 h-4 w-4 animate-float rounded-full bg-violet-400 shadow-[0_0_14px_3px_rgba(167,139,250,0.7)] [animation-delay:1.2s]"></div>
+          <div class="absolute left-[50%] top-6 h-3 w-3 animate-drift rounded-full bg-fuchsia-400 shadow-[0_0_12px_3px_rgba(232,121,249,0.7)] [animation-delay:0.9s]"></div>
+          <div class="absolute left-[86%] top-2 h-3.5 w-3.5 animate-float rounded-full bg-blue-400 shadow-[0_0_12px_3px_rgba(96,165,250,0.7)] [animation-delay:1.6s]"></div>
+          <div class="absolute left-[12%] top-6 h-2.5 w-2.5 animate-drift rounded-full bg-cyan-400 shadow-[0_0_10px_2px_rgba(34,211,238,0.7)] [animation-delay:2s]"></div>
+          <div class="absolute left-[64%] top-4 h-3 w-3 animate-float rounded-full bg-sky-400 shadow-[0_0_12px_3px_rgba(56,189,248,0.8)] [animation-delay:2.4s]"></div>
+          <div class="absolute left-[36%] top-14 h-3.5 w-3.5 animate-drift rounded-full bg-indigo-400 shadow-[0_0_12px_3px_rgba(129,140,248,0.7)] [animation-delay:1.8s]"></div>
+          <div class="absolute left-[58%] top-24 h-3 w-3 animate-float rounded-full bg-teal-400 shadow-[0_0_12px_3px_rgba(45,212,191,0.7)] [animation-delay:0.3s]"></div>
+          <div class="absolute left-[90%] top-20 h-2.5 w-2.5 animate-drift rounded-full bg-sky-300 shadow-[0_0_10px_2px_rgba(125,211,252,0.8)] [animation-delay:2.8s]"></div>
+          <div class="absolute left-[20%] top-28 h-3 w-3 animate-float rounded-full bg-emerald-300 shadow-[0_0_12px_3px_rgba(110,231,183,0.7)] [animation-delay:3.2s]"></div>
+          <div class="absolute left-[78%] top-8 h-3.5 w-3.5 animate-drift rounded-full bg-violet-400 shadow-[0_0_12px_3px_rgba(167,139,250,0.7)] [animation-delay:2.2s]"></div>
         </div>
       </aside>
 

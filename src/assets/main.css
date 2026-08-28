@@ -10,6 +10,10 @@
   --animate-aurora: aurora 20s linear infinite;
   /* [新增] 品牌区漂浮小球动画 */
   --animate-float: float 4s ease-in-out infinite;
+  /* [增强] 小球更大范围漂移（含水平与旋转） */
+  --animate-drift: drift 5.5s ease-in-out infinite;
+  /* [新增] 云朵整体上下浮动 */
+  --animate-bob: bob 6s ease-in-out infinite;
 }
 
 :root {
@@ -40,10 +44,24 @@
   100% { background-position: 50% 50%, 50% 50%; }
 }
 
-/* [新增] 品牌区装饰小球浮动动画 */
+/* [新增] 品牌区装饰小球浮动动画 - 更明显的浮动 */
 @keyframes float {
+  0%, 100% { transform: translateY(0) translateX(0) rotate(0deg); }
+  50% { transform: translateY(-26px) translateX(8px) rotate(12deg); }
+}
+
+/* [增强] 小球横向漂移 + 大范围上下移动 + 透明度呼吸 */
+@keyframes drift {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.65; }
+  25% { transform: translate(14px, -18px) scale(1.1); opacity: 1; }
+  50% { transform: translate(-6px, -36px) scale(0.95); opacity: 0.9; }
+  75% { transform: translate(-16px, -14px) scale(1.05); opacity: 1; }
+}
+
+/* [新增] 云朵整体轻微的上下浮动 */
+@keyframes bob {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
+  50% { transform: translateY(-8px); }
 }
 
 .aurora-bg {
