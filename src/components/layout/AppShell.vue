@@ -7,7 +7,7 @@ import {
   Info,
   LogOut,
   Cloud,
-  Upload,
+  Github,
 } from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 
@@ -73,9 +73,16 @@ const handleLogout = () => {
               <div class="absolute bottom-10 left-2 h-12 w-12 rounded-full bg-gradient-to-br from-blue-100/80 to-sky-200/60 backdrop-blur dark:from-blue-900/40 dark:to-sky-900/30"></div>
               <div class="absolute bottom-8 right-0 h-10 w-10 rounded-full bg-gradient-to-br from-blue-100/80 to-sky-200/60 backdrop-blur dark:from-blue-900/40 dark:to-sky-900/30"></div>
               <div class="absolute bottom-12 left-14 h-12 w-12 rounded-full bg-gradient-to-br from-blue-100/80 to-sky-200/60 backdrop-blur dark:from-blue-900/40 dark:to-sky-900/30"></div>
-              <div class="absolute bottom-8 left-1/2 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-sky-400 text-white shadow-lg shadow-blue-500/30">
-                <Upload class="h-7 w-7" />
-              </div>
+              <!-- 云朵上的 GitHub 链接（左下角，点击新窗口打开仓库） -->
+              <a
+                href="https://github.com/Jacky088/Edgeone-Imgbed"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="在 GitHub 上查看项目"
+                class="absolute bottom-8 left-1/2 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full bg-gradient-to-br from-gray-900 to-gray-700 text-white shadow-lg shadow-gray-900/30 transition-all hover:scale-105 hover:from-gray-800 hover:to-gray-600"
+              >
+                <Github class="h-7 w-7" />
+              </a>
             </div>
           </div>
           <div class="absolute left-[18%] top-10 h-3 w-3 animate-float rounded-full bg-sky-400/60 blur-[1px]"></div>

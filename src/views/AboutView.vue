@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { Info, Cloud, Database, Rocket } from 'lucide-vue-next'
 import AppShell from '@/components/layout/AppShell.vue'
+import pkg from '../../package.json'
 
-const version = 'v1.1.1'
+// 版本号直接取自 package.json，保证与仓库实际版本一致
+const version = `v${pkg.version}`
 </script>
 
 <template>
