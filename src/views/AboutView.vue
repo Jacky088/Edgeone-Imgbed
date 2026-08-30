@@ -19,7 +19,7 @@ const version = `v${pkg.version}`
       </div>
 
       <div class="glass-card-premium rounded-3xl p-8 text-center">
-        <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-blue-600 to-purple-600 text-white shadow-xl shadow-blue-500/30">
+        <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl brand-gradient text-white shadow-xl shadow-blue-500/30 ring-1 ring-white/20">
           <Cloud class="h-8 w-8" />
         </div>
         <h3 class="text-2xl font-black tracking-tight text-gray-900 dark:text-white">Edgeone-Imgbed</h3>
