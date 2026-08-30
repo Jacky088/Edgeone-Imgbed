@@ -88,6 +88,31 @@
   @apply bg-gradient-to-br from-blue-500 via-indigo-500 to-violet-600;
 }
 
+/* [弹窗] 卡片弹入：遮罩淡入的同时卡片轻微上浮缩放，产生层次感 */
+@keyframes modal-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-modal-pop { animation: modal-pop 0.2s ease-out both; }
+
+/* [弹窗] 危险图标一次性 shake，强化警示语义（延迟到弹入完成后） */
+@keyframes icon-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+.animate-icon-shake { animation: icon-shake 0.4s ease-in-out 0.2s 1 both; }
+
+/* 减少动态偏好：关闭装饰性动画 */
+@media (prefers-reduced-motion: reduce) {
+  .animate-modal-pop,
+  .animate-icon-shake {
+    animation: none;
+  }
+}
+
 /* 玻璃态卡片基础类 */
 .glass-card {
   @apply bg-white/70 dark:bg-gray-900/60 backdrop-blur-xl border border-white/20 dark:border-gray-800/50 shadow-xl;

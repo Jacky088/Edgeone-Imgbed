@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from '@/utils/axios'
 import {
   Trash2,
@@ -12,6 +12,7 @@ import {
   Braces,
   ChevronLeft,
   ChevronRight,
+  Loader2,
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { buildFormats } from '@/utils/formatLinks'
@@ -69,13 +70,23 @@ const fetchList = async () => {
 
 // 应用内删除确认（替代原生 confirm）
 const pendingDelete = ref<ImageRecord | null>(null)
+const deleting = ref(false)
+const cancelBtn = ref<HTMLButtonElement | null>(null)
+
+// 打开弹窗时把焦点放到「取消」上：手滑按回车也不会误删
+watch(pendingDelete, async (item) => {
+  if (!item) return
+  deleting.value = false
+  await nextTick()
+  cancelBtn.value?.focus()
+})
 
 // 缩略图点击后的大图预览
 const lightboxItem = ref<ImageRecord | null>(null)
 
-// Escape 关闭弹层（lightbox 优先于删除确认）
+// Escape 关闭弹层（lightbox 优先于删除确认；删除请求进行中不响应）
 const onKeydown = (e: KeyboardEvent) => {
-  if (e.key !== 'Escape') return
+  if (e.key !== 'Escape' || deleting.value) return
   if (lightboxItem.value) {
     lightboxItem.value = null
   } else {
@@ -84,6 +95,8 @@ const onKeydown = (e: KeyboardEvent) => {
 }
 
 const handleDelete = async (item: ImageRecord) => {
+  if (deleting.value) return
+  deleting.value = true
   try {
     const { data } = await axios.delete('/image-records', {
       baseURL: '',
@@ -98,6 +111,7 @@ const handleDelete = async (item: ImageRecord) => {
   } catch (e) {
     toast.error('删除失败')
   } finally {
+    deleting.value = false
     pendingDelete.value = null
   }
 }
@@ -395,30 +409,52 @@ onUnmounted(() => {
       leave-to-class="opacity-0"
     >
       <div v-if="pendingDelete" class="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div class="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" @click="pendingDelete = null"></div>
-      <div class="glass-card-premium relative w-full max-w-sm rounded-3xl p-8 text-center shadow-2xl">
-        <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 text-red-500 dark:bg-red-900/30 dark:text-red-400">
-          <AlertCircle class="h-7 w-7" />
-        </div>
-        <h3 class="text-lg font-bold text-gray-900 dark:text-white">确认删除这条记录？</h3>
-        <p class="mt-2 truncate text-xs text-gray-500 dark:text-gray-400" :title="pendingDelete.name">{{ pendingDelete.name }}</p>
-        <p class="mt-3 text-xs leading-relaxed text-gray-400 dark:text-gray-500">仅移除 KV 中的链接记录，远程文件不会被删除。</p>
-        <div class="mt-6 flex gap-3">
-          <button
-            @click="pendingDelete = null"
-            class="h-11 flex-1 rounded-xl bg-gray-100 text-sm font-semibold text-gray-600 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
-          >
-            取消
-          </button>
-          <button
-            @click="handleDelete(pendingDelete)"
-            class="h-11 flex-1 rounded-xl bg-gradient-to-r from-red-500 to-rose-500 text-sm font-bold text-white shadow-lg shadow-red-500/30 transition-all hover:from-red-400 hover:to-rose-400"
-          >
-            删除
-          </button>
+        <div class="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" @click="pendingDelete = null"></div>
+        <!-- 方向 A：玻璃 danger 卡。深浅两套底色 + 顶部高光描边 + 弹入动画 -->
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="delete-dialog-title"
+          aria-describedby="delete-dialog-desc"
+          class="animate-modal-pop relative w-full max-w-sm overflow-hidden rounded-3xl bg-white/85 shadow-2xl ring-1 ring-white/60 backdrop-blur-2xl dark:bg-gray-900/85 dark:ring-white/10"
+        >
+          <div class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/80 to-transparent dark:via-white/25"></div>
+
+          <div class="flex flex-col items-center px-7 pb-7 pt-8 text-center">
+            <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-red-500/10 ring-1 ring-red-500/20 dark:bg-red-500/15">
+              <AlertCircle class="h-7 w-7 animate-icon-shake text-red-500 drop-shadow-[0_0_10px_rgba(239,68,68,0.45)] dark:text-red-400" />
+            </div>
+            <h3 id="delete-dialog-title" class="text-lg font-bold text-gray-900 dark:text-white">删除这条记录？</h3>
+            <p
+              id="delete-dialog-desc"
+              class="mt-4 w-full break-all rounded-xl bg-gray-100/80 px-3.5 py-2.5 text-left font-mono text-xs leading-relaxed text-gray-600 line-clamp-2 dark:bg-gray-800/60 dark:text-gray-300"
+              :title="pendingDelete.name"
+            >{{ pendingDelete.name }}</p>
+            <p class="mt-3 text-xs leading-relaxed text-gray-400 dark:text-gray-500">
+              仅移除 KV 中的链接记录，CNB 上的原图文件不受影响。
+            </p>
+
+            <div class="mt-6 flex w-full flex-col gap-3 sm:flex-row">
+              <button
+                ref="cancelBtn"
+                @click="pendingDelete = null"
+                class="h-11 flex-1 rounded-xl bg-gray-100 text-sm font-semibold text-gray-600 transition-colors hover:bg-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+              >
+                取消
+              </button>
+              <button
+                @click="handleDelete(pendingDelete)"
+                :disabled="deleting"
+                class="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-red-500 to-rose-500 text-sm font-bold text-white shadow-lg shadow-red-500/30 transition-all hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                <Loader2 v-if="deleting" class="h-4 w-4 animate-spin" />
+                <Trash2 v-else class="h-4 w-4" />
+                {{ deleting ? '删除中…' : '删除' }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
   </Transition>
   </Teleport>
 </template>
