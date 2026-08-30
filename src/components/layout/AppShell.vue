@@ -34,7 +34,7 @@ const handleLogout = () => {
       <aside class="hidden w-[340px] shrink-0 flex-col justify-between py-8 lg:flex">
         <div>
           <div class="mb-8 flex items-center gap-4">
-            <div class="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-blue-600 to-purple-600 text-white shadow-xl shadow-blue-500/30 ring-1 ring-white/20">
+            <div class="relative flex h-14 w-14 items-center justify-center rounded-2xl brand-gradient text-white shadow-xl shadow-blue-500/30 ring-1 ring-white/20">
               <Cloud class="h-7 w-7" :stroke-width="2.5" />
               <div class="absolute inset-0 rounded-2xl bg-gradient-to-t from-black/10 to-transparent"></div>
             </div>
@@ -49,8 +49,8 @@ const handleLogout = () => {
             基于 EO 和 CNB 对象存储的简易图床服务
           </p>
 
-          <!-- 渐变分隔线 -->
-          <div class="mb-8 h-1 w-24 rounded-full bg-gradient-to-r from-blue-500 via-sky-400 to-emerald-400"></div>
+          <!-- 品牌渐变分隔线 -->
+          <div class="mb-8 h-1 w-24 rounded-full brand-gradient"></div>
 
           <!-- 技术徽章 -->
           <div class="flex flex-wrap gap-3">
@@ -111,7 +111,7 @@ const handleLogout = () => {
         <!-- 标题栏 -->
         <header class="flex h-14 shrink-0 items-center justify-between border-b border-gray-100/80 bg-white/60 px-4 backdrop-blur-xl dark:border-gray-800/50 dark:bg-gray-900/60 sm:h-16 sm:px-6">
           <div class="flex items-center gap-2.5 sm:gap-3">
-            <div class="relative flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 via-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/25 ring-1 ring-white/20 sm:h-9 sm:w-9">
+            <div class="relative flex h-8 w-8 items-center justify-center rounded-xl brand-gradient text-white shadow-lg shadow-blue-500/25 ring-1 ring-white/20 sm:h-9 sm:w-9">
               <Cloud class="h-4 w-4 sm:h-5 sm:w-5" :stroke-width="2.5" />
               <div class="absolute inset-0 rounded-xl bg-gradient-to-t from-black/10 to-transparent"></div>
             </div>
@@ -142,6 +142,7 @@ const handleLogout = () => {
               v-for="item in menu"
               :key="item.name"
               :to="item.to"
+              :aria-current="route.name === item.name ? 'page' : undefined"
               class="group flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all"
               :class="
                 route.name === item.name
@@ -170,14 +171,21 @@ const handleLogout = () => {
             v-for="item in menu"
             :key="item.name"
             :to="item.to"
-            class="flex flex-1 flex-col items-center justify-center gap-1 py-3 transition-colors"
+            :aria-current="route.name === item.name ? 'page' : undefined"
+            class="flex flex-1 flex-col items-center justify-center gap-1 py-2 transition-colors"
             :class="
               route.name === item.name
                 ? 'text-blue-600 dark:text-blue-300'
                 : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'
             "
           >
-            <component :is="item.icon" class="h-6 w-6" :stroke-width="route.name === item.name ? 2.5 : 2" />
+            <!-- 激活态：图标背后的 pill 高亮，与桌面侧栏选中样式呼应 -->
+            <span
+              class="flex h-8 w-16 items-center justify-center rounded-full transition-colors"
+              :class="route.name === item.name ? 'bg-blue-500/15 dark:bg-blue-400/15' : ''"
+            >
+              <component :is="item.icon" class="h-6 w-6" :stroke-width="route.name === item.name ? 2.5 : 2" />
+            </span>
             <span class="text-[11px] font-medium">{{ item.label }}</span>
           </RouterLink>
         </nav>

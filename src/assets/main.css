@@ -83,6 +83,11 @@
     radial-gradient(at 0% 100%, rgba(190, 24, 93, 0.15) 0px, transparent 50%);
 }
 
+/* 品牌主渐变：Logo、主按钮、分隔线等品牌元素统一使用，避免多种渐变并存 */
+.brand-gradient {
+  @apply bg-gradient-to-br from-blue-500 via-indigo-500 to-violet-600;
+}
+
 /* 玻璃态卡片基础类 */
 .glass-card {
   @apply bg-white/70 dark:bg-gray-900/60 backdrop-blur-xl border border-white/20 dark:border-gray-800/50 shadow-xl;

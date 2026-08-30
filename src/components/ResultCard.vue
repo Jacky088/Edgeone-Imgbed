@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { buildFormats, type UploadResult, type LinkFormatKey } from '@/utils/formatLinks'
-import { Link2, Code2, Braces, Hash, Copy, Check, Image as ImageIcon, Server } from 'lucide-vue-next'
+import { Link2, Code2, Braces, Hash, Copy, Check, ChevronDown, Image as ImageIcon, Server } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
 const props = defineProps<{ info: UploadResult }>()
+
+// 链接以外的格式默认收起，批量上传时避免整页卡片过长
+const showMore = ref(false)
 
 // 嵌入哪种 URL：原图 or 缩略图
 const baseUrl = ref<'cdn' | 'thumb'>('cdn')
@@ -114,6 +117,7 @@ const onPreviewError = (e: Event) => {
       <div class="flex flex-col gap-4 lg:col-span-8">
         <div
           v-for="f in formats"
+          v-show="f.key === 'url' || showMore"
           :key="f.key"
           class="group rounded-xl ring-1 ring-gray-200 transition-all hover:ring-blue-300 hover:shadow-md dark:ring-gray-800 dark:hover:ring-blue-700"
         >
@@ -142,6 +146,16 @@ const onPreviewError = (e: Event) => {
             <pre class="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-gray-700 dark:text-gray-300">{{ f.value }}</pre>
           </div>
         </div>
+
+        <!-- 次要格式展开 / 收起 -->
+        <button
+          v-if="formats.length > 1"
+          @click="showMore = !showMore"
+          class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-gray-200 py-2 text-xs font-semibold text-gray-500 transition-colors hover:border-blue-300 hover:text-blue-600 dark:border-gray-700 dark:text-gray-400 dark:hover:border-blue-700 dark:hover:text-blue-400"
+        >
+          <ChevronDown class="h-3.5 w-3.5 transition-transform duration-200" :class="showMore ? 'rotate-180' : ''" />
+          {{ showMore ? '收起格式' : '更多格式（HTML / Markdown / BBCode）' }}
+        </button>
 
         <!-- 源站直连（备用） -->
         <div v-if="info.urlOriginal || info.thumbnailOriginalUrl" class="space-y-3 rounded-xl bg-gray-50/50 p-4 dark:bg-gray-900/30">

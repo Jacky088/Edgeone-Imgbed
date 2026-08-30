@@ -22,7 +22,7 @@
             {{ isDragging ? '快松手！' : '点击或拖拽上传' }}
           </p>
           <p class="text-sm text-gray-400 dark:text-gray-500">
-            支持 JPG, PNG, GIF, WebP (最大 5MB)，可批量多选
+            支持 JPG, PNG, GIF, WebP (最大 5MB)，可批量多选或 Ctrl+V 粘贴
           </p>
         </div>
       </div>
@@ -34,7 +34,13 @@
 
       <div v-else-if="displayTask" class="flex w-full flex-col items-center gap-4">
         <div class="relative">
-           <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400">
+           <img
+            v-if="displayTask.previewUrl"
+            :src="displayTask.previewUrl"
+            :alt="displayTask.rawName"
+            class="h-28 w-28 rounded-2xl border-4 border-white object-cover shadow-lg ring-1 ring-gray-900/5 dark:border-gray-700 dark:ring-white/5"
+          />
+           <div v-else class="flex h-16 w-16 items-center justify-center rounded-2xl bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400">
               <FileImage class="h-8 w-8" />
            </div>
            <button
@@ -90,8 +96,25 @@
           <template v-else>
             <XCircle class="h-3.5 w-3.5 text-red-500" :title="t.errorMsg" />
             <span class="font-bold text-red-500" :title="t.errorMsg">失败</span>
+            <button
+              @click="retryTask(t)"
+              :disabled="uploading"
+              class="rounded bg-red-50 px-1.5 py-0.5 font-bold text-red-500 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50"
+            >重试</button>
           </template>
         </span>
+      </div>
+    </div>
+
+    <!-- 被拒文件：展示原因，不参与上传 -->
+    <div v-if="rejectedFiles.length > 0" class="mt-2 space-y-1">
+      <div
+        v-for="r in rejectedFiles"
+        :key="r.id"
+        class="flex items-center justify-between gap-3 rounded-xl bg-gray-50/60 px-3 py-1.5 text-xs dark:bg-gray-800/40"
+      >
+        <span class="min-w-0 truncate text-gray-400 dark:text-gray-500" :title="r.name">{{ r.name }}</span>
+        <span class="shrink-0 rounded bg-gray-200/70 px-1.5 py-0.5 font-bold text-gray-400 dark:bg-gray-700/60 dark:text-gray-500">{{ r.reason }}</span>
       </div>
     </div>
 
@@ -105,7 +128,7 @@
 
     <Button
       class="mt-6 w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all
-             bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500
+             brand-gradient hover:brightness-110
              hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
       :disabled="!canUpload || uploading"
       @click="startUpload"
@@ -116,11 +139,30 @@
     <p v-if="errorMsg" class="mt-4 text-center text-sm font-medium text-red-500 animate-shake">
       {{ errorMsg }}
     </p>
+
+    <!-- 全窗口拖拽遮罩：拖到页面任意位置都能松手上传（Teleport 到 body，避免祖先 backdrop-filter 劫持 fixed 定位） -->
+    <Teleport to="body">
+      <Transition
+        enter-active-class="transition duration-200 ease-out"
+        enter-from-class="opacity-0"
+        enter-to-class="opacity-100"
+        leave-active-class="transition duration-150 ease-in"
+        leave-from-class="opacity-100"
+        leave-to-class="opacity-0"
+      >
+        <div v-if="windowDragging" class="fixed inset-0 z-[80] bg-blue-500/10 p-4 backdrop-blur-sm sm:p-8">
+          <div class="flex h-full w-full flex-col items-center justify-center gap-4 rounded-3xl border-4 border-dashed border-blue-500/70 bg-white/80 dark:bg-gray-900/80">
+            <UploadCloud class="h-14 w-14 animate-bounce text-blue-600 dark:text-blue-400" />
+            <p class="text-xl font-bold text-blue-600 dark:text-blue-300">松手即可上传</p>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import axios from '@/utils/axios'
 import type { AxiosProgressEvent } from 'axios'
 import { Button } from '@/components/ui/button'
@@ -168,12 +210,19 @@ interface ThumbnailResult {
   size: number
 }
 
-// 批量上传任务：queued → processing(压缩) → ready → uploading → success / error
-interface UploadTask {
+// 被拒文件：仅展示原因，不参与上传
+interface RejectedFile {
   id: string
+  name: string
+  reason: string
+}
+
+// 批量上传任务：queued → processing(压缩) → ready → uploading → success / error
+interface UploadTask {  id: string
   rawFile: File
   rawName: string
   rawSize: number
+  previewUrl: string
   file: File | null
   thumbnailFile: File | null
   status: 'queued' | 'processing' | 'ready' | 'uploading' | 'success' | 'error'
@@ -222,11 +271,16 @@ const emit = defineEmits<{
 }>()
 
 const tasks = ref<UploadTask[]>([])
+const rejectedFiles = ref<RejectedFile[]>([])
 const processingIndex = ref(0)
 const uploading = ref<boolean>(false)
 const uploadIndex = ref(0)
 const errorMsg = ref<string>('')
 const isDragging = ref<boolean>(false)
+
+// 全窗口拖拽：拖到页面任意位置都能松手上传
+const windowDragging = ref<boolean>(false)
+let dragDepth = 0
 
 // 队首任务：拖拽区预览当前批次第一张
 const displayTask = computed<UploadTask | null>(() => tasks.value[0] || null)
@@ -390,48 +444,63 @@ function onDrop(e: DragEvent): void {
   }
 }
 
-// 批量入口：校验（超大/重复）→ 建队 → 逐张压缩（压缩失败仅标记该张，不中断批次）
+// 批量入口：校验（非图片/超大/重复）→ 建队 → 逐张压缩（压缩失败仅标记该张，不中断批次）
 async function handleFiles(list: File[]): Promise<void> {
   const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-  const images = list.filter((f) => allowedTypes.includes(f.type))
-  const skipped = list.length - images.length
-  if (skipped > 0) {
-    toast.warning(`已跳过 ${skipped} 个非图片文件`)
-  }
-  if (images.length === 0) return
 
-  // 拦截超大文件：压缩前直接拒绝并明确告知上限
-  const oversize = images.filter((f) => f.size > 5 * 1024 * 1024)
-  if (oversize.length > 0) {
-    const extra = oversize.length > 1 ? `（已跳过 ${oversize.length} 张超大图片）` : `（「${oversize[0]?.name}」已被跳过）`
-    toast.warning(`最大只允许5MB的图片上传！${extra}`)
+  // 被拒文件逐个记录原因，在队列下方持久展示（toast 只做汇总提醒）
+  const rejected: RejectedFile[] = []
+  const pushRejected = (name: string, reason: string) => {
+    rejected.push({ id: crypto.randomUUID(), name, reason })
   }
 
-  // 批内同名/重复判重：NFC 规范化 + 小写对比
-  // 覆盖：同一文件拖两次、大小写变体（Windows 文件名不区分大小写，压缩后同名）、Unicode 组合形式差异
   const seen = new Set<string>()
-  const dupNames: string[] = []
-  const valid = images.filter((f) => {
-    if (f.size > 5 * 1024 * 1024) return false
+  const valid: File[] = []
+  for (const f of list) {
+    if (!allowedTypes.includes(f.type)) {
+      pushRejected(f.name, '非图片格式')
+      continue
+    }
+    // 拦截超大文件：压缩前直接拒绝并明确告知上限
+    if (f.size > 5 * 1024 * 1024) {
+      pushRejected(f.name, '超过 5MB')
+      continue
+    }
+    // 批内同名/重复判重：NFC 规范化 + 小写对比
+    // 覆盖：同一文件拖两次、大小写变体（Windows 文件名不区分大小写，压缩后同名）、Unicode 组合形式差异
     const key = f.name.normalize('NFC').toLowerCase()
     if (seen.has(key)) {
-      dupNames.push(f.name)
-      return false
+      pushRejected(f.name, '重复/同名')
+      continue
     }
     seen.add(key)
-    return true
-  })
+    valid.push(f)
+  }
+
+  const typeSkipped = rejected.filter((r) => r.reason === '非图片格式').length
+  const oversizeSkipped = rejected.filter((r) => r.reason === '超过 5MB').length
+  const dupNames = rejected.filter((r) => r.reason === '重复/同名').map((r) => r.name)
+  if (typeSkipped > 0) {
+    toast.warning(`已跳过 ${typeSkipped} 个非图片文件`)
+  }
+  if (oversizeSkipped > 0) {
+    toast.warning(`最大只允许5MB的图片上传！（已跳过 ${oversizeSkipped} 张超大图片）`)
+  }
   if (dupNames.length > 0) {
     const shown = dupNames.slice(0, 3).join('、')
     toast.warning(`已跳过 ${dupNames.length} 个重复/同名文件：${shown}${dupNames.length > 3 ? ' 等' : ''}`)
   }
+
+  rejectedFiles.value = rejected
   if (valid.length === 0) return
 
+  revokePreviews()
   tasks.value = valid.map((f) => ({
     id: crypto.randomUUID(),
     rawFile: f,
     rawName: f.name,
     rawSize: f.size,
+    previewUrl: URL.createObjectURL(f),
     file: null,
     thumbnailFile: null,
     status: 'queued',
@@ -480,11 +549,188 @@ async function handleFiles(list: File[]): Promise<void> {
   }
 }
 
+// 释放任务预览的 objectURL，避免内存泄漏
+function revokePreviews(): void {
+  for (const t of tasks.value) {
+    if (t.previewUrl) URL.revokeObjectURL(t.previewUrl)
+  }
+}
+
 function clearAll(): void {
+  revokePreviews()
   tasks.value = []
+  rejectedFiles.value = []
   processingIndex.value = 0
   uploadIndex.value = 0
   errorMsg.value = ''
+}
+
+// 截图后 Ctrl+V 直接粘贴上传；剪贴板没有文件时不拦截默认行为
+function onPaste(e: ClipboardEvent): void {
+  if (uploading.value) return
+  const files = Array.from(e.clipboardData?.files || [])
+  if (files.length > 0) {
+    e.preventDefault()
+    handleFiles(files)
+  }
+}
+
+function dragHasFiles(e: DragEvent): boolean {
+  return Array.from(e.dataTransfer?.types || []).includes('Files')
+}
+
+function onWindowDragEnter(e: DragEvent): void {
+  if (uploading.value || !dragHasFiles(e)) return
+  dragDepth++
+  windowDragging.value = true
+}
+
+function onWindowDragOver(e: DragEvent): void {
+  if (dragDepth > 0) e.preventDefault()
+}
+
+function onWindowDragLeave(e: DragEvent): void {
+  if (dragDepth === 0) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) windowDragging.value = false
+}
+
+function onWindowDrop(e: DragEvent): void {
+  if (dragDepth === 0) return
+  e.preventDefault()
+  dragDepth = 0
+  windowDragging.value = false
+  isDragging.value = false
+  if (uploading.value) return
+  const list = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : []
+  if (list.length > 0) {
+    handleFiles(list)
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('paste', onPaste)
+  window.addEventListener('dragenter', onWindowDragEnter)
+  window.addEventListener('dragover', onWindowDragOver)
+  window.addEventListener('dragleave', onWindowDragLeave)
+  window.addEventListener('drop', onWindowDrop)
+})
+onUnmounted(() => {
+  window.removeEventListener('paste', onPaste)
+  window.removeEventListener('dragenter', onWindowDragEnter)
+  window.removeEventListener('dragover', onWindowDragOver)
+  window.removeEventListener('dragleave', onWindowDragLeave)
+  window.removeEventListener('drop', onWindowDrop)
+  revokePreviews()
+})
+
+// 单张上传 + 写记录；失败仅把该任务标记为 error，由调用方决定是否继续
+async function uploadSingle(t: UploadTask): Promise<void> {
+  if (!t.file) return
+  t.status = 'uploading'
+  t.progress = 0
+
+  try {
+    const formData = new FormData()
+    formData.append('file', t.file)
+    if (props.generateThumbnail && t.thumbnailFile) {
+      formData.append('thumbnail', t.thumbnailFile)
+    }
+
+    const { data } = await axios.post<UploadResponse>('/upload/img', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (e: AxiosProgressEvent) => {
+        if (e.total) {
+          t.progress = Math.round((e.loaded / e.total) * 100)
+        }
+      },
+      timeout: 30000,
+    })
+
+    if (data.code !== 0) {
+      throw new Error(data.msg || '上传失败')
+    }
+
+    const thumbnailUrl = data.data.thumbnailUrl || ''
+    const uploadInfo: UploadInfo = {
+      url: data.data.url,
+      urlOriginal: toCnbUrl(data.data?.assets?.path),
+      thumbnailUrl: thumbnailUrl,
+      thumbnailOriginalUrl: toCnbUrl(data.data?.thumbnailAssets?.path),
+      name: t.rawName,
+      size: t.file.size,
+      type: t.file.type,
+      compressionRatio: t.compressionRatio,
+      width: t.width,
+      height: t.height,
+      hasThumbnail: props.generateThumbnail,
+      thumbnailWidth: t.thumbnailWidth,
+      thumbnailHeight: t.thumbnailHeight,
+      thumbnailSize: t.thumbnailSize,
+    }
+    emit('update:uploadInfo', uploadInfo)
+    t.status = 'success'
+
+    // 保存上传记录到 KV（同站点接口直接写入）
+    try {
+      await axios.post(
+        '/image-records',
+        {
+          id: crypto.randomUUID(),
+          name: t.rawName,
+          url: data.data.url,
+          thumbnailUrl: thumbnailUrl || undefined,
+          size: t.file.size,
+          type: t.file.type,
+          createdAt: Date.now(),
+        },
+        { baseURL: '' },
+      )
+    } catch (recordError) {
+      console.error('保存上传记录失败:', recordError)
+      toast.warning(`「${t.rawName}」已上传，但链接记录保存失败`)
+    }
+  } catch (err) {
+    console.error(err)
+    const error = err as { response?: { data?: { error?: string; msg?: string } }; message?: string }
+    t.status = 'error'
+    t.errorMsg = error.response?.data?.error || error.response?.data?.msg || error.message || '上传失败'
+    errorMsg.value = `「${t.rawName}」${t.errorMsg}`
+  }
+}
+
+// 失败重试：压缩未完成的先补压缩，随后仅重传这一张
+async function retryTask(t: UploadTask): Promise<void> {
+  if (uploading.value || t.status !== 'error') return
+  try {
+    if (!t.file) {
+      t.status = 'processing'
+      const { compressedFile, width, height } = await compressImageToWebp(
+        t.rawFile,
+        props.quality,
+        props.maxWidth,
+        props.maxHeight,
+      )
+      t.compressionRatio = ((t.rawSize - compressedFile.size) / t.rawSize) * 100
+      t.file = compressedFile
+      t.width = width
+      t.height = height
+
+      if (props.generateThumbnail) {
+        const thumbnail = await generateThumbnailImage(compressedFile)
+        t.thumbnailFile = thumbnail.thumbnailFile
+        t.thumbnailWidth = thumbnail.width
+        t.thumbnailHeight = thumbnail.height
+        t.thumbnailSize = thumbnail.size
+      }
+    }
+    errorMsg.value = ''
+    await uploadSingle(t)
+  } catch (err) {
+    console.error('图片处理失败:', err)
+    t.status = 'error'
+    t.errorMsg = err instanceof Error ? err.message : '图片处理失败'
+  }
 }
 
 // 串行上传：逐张上传并写记录，单张失败不中断批次
@@ -503,76 +749,7 @@ async function startUpload(): Promise<void> {
     if (!t) continue
     if (t.status !== 'ready' || !t.file) continue
     uploadIndex.value = i + 1
-    t.status = 'uploading'
-    t.progress = 0
-
-    try {
-      const formData = new FormData()
-      formData.append('file', t.file)
-      if (props.generateThumbnail && t.thumbnailFile) {
-        formData.append('thumbnail', t.thumbnailFile)
-      }
-
-      const { data } = await axios.post<UploadResponse>('/upload/img', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        onUploadProgress: (e: AxiosProgressEvent) => {
-          if (e.total) {
-            t.progress = Math.round((e.loaded / e.total) * 100)
-          }
-        },
-        timeout: 30000,
-      })
-
-      if (data.code !== 0) {
-        throw new Error(data.msg || '上传失败')
-      }
-
-      const thumbnailUrl = data.data.thumbnailUrl || ''
-      const uploadInfo: UploadInfo = {
-        url: data.data.url,
-        urlOriginal: toCnbUrl(data.data?.assets?.path),
-        thumbnailUrl: thumbnailUrl,
-        thumbnailOriginalUrl: toCnbUrl(data.data?.thumbnailAssets?.path),
-        name: t.rawName,
-        size: t.file.size,
-        type: t.file.type,
-        compressionRatio: t.compressionRatio,
-        width: t.width,
-        height: t.height,
-        hasThumbnail: props.generateThumbnail,
-        thumbnailWidth: t.thumbnailWidth,
-        thumbnailHeight: t.thumbnailHeight,
-        thumbnailSize: t.thumbnailSize,
-      }
-      emit('update:uploadInfo', uploadInfo)
-      t.status = 'success'
-
-      // 保存上传记录到 KV（同站点接口直接写入）
-      try {
-        await axios.post(
-          '/image-records',
-          {
-            id: crypto.randomUUID(),
-            name: t.rawName,
-            url: data.data.url,
-            thumbnailUrl: thumbnailUrl || undefined,
-            size: t.file.size,
-            type: t.file.type,
-            createdAt: Date.now(),
-          },
-          { baseURL: '' },
-        )
-      } catch (recordError) {
-        console.error('保存上传记录失败:', recordError)
-        toast.warning(`「${t.rawName}」已上传，但链接记录保存失败`)
-      }
-    } catch (err) {
-      console.error(err)
-      const error = err as { response?: { data?: { error?: string; msg?: string } }; message?: string }
-      t.status = 'error'
-      t.errorMsg = error.response?.data?.error || error.response?.data?.msg || error.message || '上传失败'
-      errorMsg.value = `「${t.rawName}」${t.errorMsg}`
-    }
+    await uploadSingle(t)
   }
 
   uploading.value = false

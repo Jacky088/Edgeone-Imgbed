@@ -72,9 +72,9 @@ const handleLogin = async () => {
           @keyup.enter="handleLogin"
         />
 
-        <Button 
-          class="w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all 
-                 bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500
+        <Button
+          class="w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all
+                 brand-gradient hover:brightness-110
                  hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm"
           @click="handleLogin" 
           :disabled="loading"
