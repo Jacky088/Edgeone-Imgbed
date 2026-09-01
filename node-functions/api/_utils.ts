@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 
-// 访问 token 有效期：7 天
-const AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
+// 访问 token 有效期：24 小时
+const AUTH_TOKEN_TTL_MS = 24 * 60 * 60 * 1000
 
 /**
  * 获取认证密钥：优先使用 AUTH_SECRET 环境变量，
