@@ -35,7 +35,7 @@ const router = createRouter({
 
 // [新增] 全局前置守卫
 router.beforeEach((to, from, next) => {
-  // 1. 检查是否有 token：sessionStorage 优先，其次 localStorage（"记住我"30 天）
+  // 1. 检查是否有 token：sessionStorage 优先，其次 localStorage（"记住我"7 天）
   const isAuthenticated =
     sessionStorage.getItem('site_access_token') || localStorage.getItem('site_access_token')
 

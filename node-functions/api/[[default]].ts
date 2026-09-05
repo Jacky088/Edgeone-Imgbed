@@ -73,7 +73,7 @@ app.post('/auth/verify', rateLimiter(5, 60000), (req, res) => {
   }
 
   if (typeof password === 'string' && securePasswordCompare(password, sysPassword)) {
-    // 签发带 HMAC 签名和过期时间的 token；勾选记住我时延长到 30 天
+    // 签发带 HMAC 签名和过期时间的 token；勾选记住我时延长到 7 天
     return res.json(reply(0, '验证通过', { token: signAuthToken(remember === true) }))
   } else {
     return res.status(403).json(reply(403, '口令错误', null))

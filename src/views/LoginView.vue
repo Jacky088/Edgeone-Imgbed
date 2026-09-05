@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from '@/utils/axios'
-import { LockKeyhole } from 'lucide-vue-next'
+import { LockKeyhole, TriangleAlert } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { toast } from 'vue-sonner'
 import ThemeToggle from '@/components/ThemeToggle.vue'
@@ -24,7 +24,7 @@ const handleLogin = async () => {
 
     if (data.code === 0) {
       // 存储服务端签发的动态 token（含 HMAC 签名与过期时间）
-      // 勾选"记住我"时存 localStorage（30 天 token），否则存 sessionStorage
+      // 勾选"记住我"时存 localStorage（7 天 token），否则存 sessionStorage
       const token = data.data?.token || ''
       if (remember.value) {
         localStorage.setItem('site_access_token', token)
@@ -87,8 +87,16 @@ const handleLogin = async () => {
             type="checkbox"
             class="h-4 w-4 cursor-pointer accent-blue-600"
           />
-          记住我 30 天（公用电脑慎选）
+          记住我 7 天
         </label>
+
+        <p
+          v-if="remember"
+          class="flex items-start gap-2 rounded-xl border border-amber-300/60 bg-amber-50 px-3 py-2.5 text-left text-xs font-medium leading-relaxed text-amber-700 dark:border-amber-500/30 dark:bg-amber-900/20 dark:text-amber-300"
+        >
+          <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0" />
+          <span>将在本设备保留 <b class="font-bold">7 天</b>长效登录凭证，期间无需再次输入口令。公用电脑、共享设备请勿勾选，用完请及时退出登录！</span>
+        </p>
 
         <Button
           class="w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all
