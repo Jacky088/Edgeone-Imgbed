@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import QRCode from 'qrcode'
 import { buildFormats, type UploadResult, type LinkFormatKey } from '@/utils/formatLinks'
-import { Link2, Code2, Braces, Hash, Copy, Check, ChevronDown, Image as ImageIcon, Server } from 'lucide-vue-next'
+import { Link2, Code2, Braces, Hash, Copy, Check, ChevronDown, Image as ImageIcon, Server, QrCode } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
 const props = defineProps<{ info: UploadResult }>()
@@ -57,6 +58,28 @@ const onPreviewError = (e: Event) => {
     img.src = props.info.urlOriginal || ''
   }
 }
+
+// 二维码分享：按需生成，弹层展示
+const qrDataUrl = ref('')
+const showQr = ref(false)
+
+const toggleQr = async () => {
+  if (showQr.value) {
+    showQr.value = false
+    return
+  }
+  try {
+    qrDataUrl.value = await QRCode.toDataURL(props.info.url, {
+      width: 220,
+      margin: 2,
+      color: { dark: '#111827', light: '#ffffff' },
+    })
+    showQr.value = true
+  } catch (err) {
+    console.error(err)
+    toast.error('二维码生成失败')
+  }
+}
 </script>
 
 <template>
@@ -73,6 +96,14 @@ const onPreviewError = (e: Event) => {
       <span v-if="info.compressionRatio != null" class="shrink-0 rounded-full bg-green-50 px-2.5 py-1 text-[11px] font-bold text-green-600 dark:bg-green-900/30 dark:text-green-400">
         压缩 {{ info.compressionRatio.toFixed(0) }}%
       </span>
+      <button
+        @click="toggleQr"
+        class="flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-gray-100 px-3 text-[11px] font-bold text-gray-600 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-blue-900/30 dark:hover:text-blue-300"
+        title="生成二维码，手机扫码取图"
+      >
+        <QrCode class="h-3.5 w-3.5" />
+        二维码
+      </button>
     </div>
 
     <div class="grid grid-cols-1 gap-8 p-6 lg:grid-cols-12 lg:p-8">
@@ -111,6 +142,19 @@ const onPreviewError = (e: Event) => {
           >缩略图</button>
         </div>
         <p class="text-xs font-medium text-gray-400 dark:text-gray-500">选择要嵌入的链接基准</p>
+
+        <!-- 二维码弹层：手机扫码直接取图 -->
+        <Transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+        >
+          <div v-if="showQr && qrDataUrl" class="flex flex-col items-center gap-2 rounded-2xl bg-white p-4 shadow-xl ring-1 ring-gray-900/5 dark:bg-gray-800 dark:ring-white/10">
+            <img :src="qrDataUrl" alt="链接二维码" class="h-[180px] w-[180px] rounded-lg" />
+            <p class="max-w-[200px] truncate text-[11px] text-gray-400 dark:text-gray-500" :title="info.url">{{ info.url }}</p>
+            <p class="text-xs font-semibold text-gray-500 dark:text-gray-400">手机扫码直接取图</p>
+          </div>
+        </Transition>
       </div>
 
       <!-- 右：四格式块 -->

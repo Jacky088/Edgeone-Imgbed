@@ -4,8 +4,8 @@ import ResultCard from '@/components/ResultCard.vue'
 import AppShell from '@/components/layout/AppShell.vue'
 import { ref, nextTick } from 'vue'
 import { toast } from 'vue-sonner'
-import { Link2, Braces, Trash2 } from 'lucide-vue-next'
-import { buildFormats, type UploadResult } from '@/utils/formatLinks'
+import { Link2, Braces, Code2, Hash, Trash2 } from 'lucide-vue-next'
+import { buildFormats, type UploadResult, type LinkFormatKey } from '@/utils/formatLinks'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 
 // 上传压缩参数：从设置页读取（localStorage 持久化），仍是原 WebP 压缩管线
@@ -23,6 +23,24 @@ const handleUploadSuccess = (info: UploadResult) => {
   }
 }
 
+// 上传批次结束（FileUploader 内部 toast 之后）触发自动复制
+const handleUploadFinished = async () => {
+  if (!settings.value.autoCopy || results.value.length === 0) return
+  const key = settings.value.defaultCopyFormat
+  const text = results.value
+    .map((r) => buildFormats(r, r.url).find((f) => f.key === key)?.value || '')
+    .filter(Boolean)
+    .join('\n')
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    const label = { url: '链接', markdown: 'Markdown', html: 'HTML', bbcode: 'BBCode' }[key]
+    toast.success(`已自动复制 ${results.value.length} 条${label}`)
+  } catch {
+    toast.info('自动复制失败，请手动复制')
+  }
+}
+
 const copyText = async (text: string, msg: string) => {
   try {
     await navigator.clipboard.writeText(text)
@@ -34,13 +52,14 @@ const copyText = async (text: string, msg: string) => {
 }
 
 // 复用 buildFormats，保证与单卡复制一致的转义规则
-const copyAll = (key: 'url' | 'markdown') => {
+const copyAll = (key: LinkFormatKey) => {
   const text = results.value
     .map((r) => buildFormats(r, r.url).find((f) => f.key === key)?.value || '')
     .filter(Boolean)
     .join('\n')
   if (!text) return
-  copyText(text, `已复制 ${results.value.length} 条${key === 'url' ? '链接' : ' Markdown'}`)
+  const label = { url: '链接', markdown: 'Markdown', html: 'HTML', bbcode: 'BBCode' }[key]
+  copyText(text, `已复制 ${results.value.length} 条${label}`)
 }
 
 const clearResults = () => {
@@ -55,6 +74,7 @@ const clearResults = () => {
       <div class="glass-card-premium overflow-hidden rounded-3xl p-6 shadow-2xl shadow-blue-500/5 ring-1 ring-white/20 dark:shadow-blue-500/10 dark:ring-white/5">
         <FileUploader
           @update:uploadInfo="handleUploadSuccess"
+          @upload:finished="handleUploadFinished"
           :maxHeight="5000"
           :maxWidth="5000"
           :quality="settings.quality"
@@ -94,6 +114,20 @@ const clearResults = () => {
               >
                 <Braces class="h-3.5 w-3.5" />
                 复制全部 Markdown
+              </button>
+              <button
+                @click="copyAll('html')"
+                class="flex h-8 items-center gap-1.5 rounded-lg bg-gray-100 px-3 text-xs font-semibold text-gray-600 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-blue-900/30 dark:hover:text-blue-300"
+              >
+                <Code2 class="h-3.5 w-3.5" />
+                复制全部 HTML
+              </button>
+              <button
+                @click="copyAll('bbcode')"
+                class="flex h-8 items-center gap-1.5 rounded-lg bg-gray-100 px-3 text-xs font-semibold text-gray-600 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-blue-900/30 dark:hover:text-blue-300"
+              >
+                <Hash class="h-3.5 w-3.5" />
+                复制全部 BBCode
               </button>
               <button
                 @click="clearResults"

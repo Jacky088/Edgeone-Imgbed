@@ -27,6 +27,7 @@ const pageTitle = computed(() => menu.find((item) => item.name === route.name)?.
 
 const handleLogout = () => {
   sessionStorage.removeItem('site_access_token')
+  localStorage.removeItem('site_access_token')
   router.push('/login')
 }
 </script>

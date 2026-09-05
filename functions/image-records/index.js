@@ -1,4 +1,6 @@
 const PREFIX = 'image_'
+// 软删除记录保留 30 天，过期由读取时惰性清理
+const SOFT_DELETE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 function json(code, msg, data, status = 200) {
   return new Response(JSON.stringify({ code, msg, data }), {
@@ -79,14 +81,51 @@ async function listRecords() {
   return records.sort((a, b) => b.createdAt - a.createdAt)
 }
 
+// 惰性清理：软删除超过保留期的记录物理移除
+async function purgeExpired(records) {
+  const now = Date.now()
+  const expired = records.filter(
+    (r) => r.deletedAt && now - r.deletedAt > SOFT_DELETE_TTL_MS,
+  )
+  if (expired.length === 0) return
+  await Promise.all(
+    expired.map((r) => IMG_RECORDS_KV.delete(`${PREFIX}${String(r.id).replace(/[^a-zA-Z0-9_]/g, '')}`)),
+  )
+}
+
 export async function onRequest({ request, env }) {
   try {
     if (!(await isAuthorized(request, env))) {
       return json(401, '未授权访问', null, 401)
     }
 
+    const url = new URL(request.url)
+
+    // 统计：总数 / 总大小 / 类型分布（含软删除中的记录）
+    if (request.method === 'GET' && url.pathname.endsWith('/stats')) {
+      const records = await listRecords()
+      await purgeExpired(records)
+      const active = records.filter((r) => !r.deletedAt)
+      const byType = {}
+      for (const r of active) {
+        const ext = (r.type || '').split('/')[1] || 'other'
+        byType[ext] = (byType[ext] || 0) + 1
+      }
+      return json(0, '获取成功', {
+        count: active.length,
+        totalSize: active.reduce((sum, r) => sum + (Number(r.size) || 0), 0),
+        trashed: records.length - active.length,
+        byType,
+      })
+    }
+
     if (request.method === 'GET') {
-      return json(0, '获取成功', await listRecords())
+      const records = await listRecords()
+      await purgeExpired(records)
+      // 默认只返回未删除记录；?trash=1 返回回收站
+      const showTrash = url.searchParams.get('trash') === '1'
+      const filtered = showTrash ? records.filter((r) => r.deletedAt) : records.filter((r) => !r.deletedAt)
+      return json(0, '获取成功', filtered)
     }
 
     if (request.method === 'POST') {
@@ -113,13 +152,38 @@ export async function onRequest({ request, env }) {
       return json(0, '保存成功', null)
     }
 
-    if (request.method === 'DELETE') {
-      const id = new URL(request.url).searchParams.get('id')
+    // PUT：恢复回收站记录（清除 deletedAt 标记）
+    if (request.method === 'PUT') {
+      const id = url.searchParams.get('id')
       if (!id) return json(1, 'ID不能为空', null, 400)
 
       const safeId = id.replace(/[^a-zA-Z0-9_]/g, '')
-      await IMG_RECORDS_KV.delete(`${PREFIX}${safeId}`)
-      return json(0, '删除成功', null)
+      const record = await IMG_RECORDS_KV.get(`${PREFIX}${safeId}`, { type: 'json' })
+      if (!record) return json(1, '记录不存在', null, 404)
+
+      delete record.deletedAt
+      await IMG_RECORDS_KV.put(`${PREFIX}${safeId}`, JSON.stringify(record))
+      return json(0, '已恢复', null)
+    }
+
+    if (request.method === 'DELETE') {
+      const id = url.searchParams.get('id')
+      if (!id) return json(1, 'ID不能为空', null, 400)
+
+      const safeId = id.replace(/[^a-zA-Z0-9_]/g, '')
+      const key = `${PREFIX}${safeId}`
+      const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
+      if (!record) return json(1, '记录不存在', null, 404)
+
+      // ?purge=1 彻底删除；默认软删除进回收站，30 天后惰性清理
+      if (url.searchParams.get('purge') === '1') {
+        await IMG_RECORDS_KV.delete(key)
+        return json(0, '已彻底删除', null)
+      }
+
+      record.deletedAt = Date.now()
+      await IMG_RECORDS_KV.put(key, JSON.stringify(record))
+      return json(0, '已移入回收站', null)
     }
 
     return json(405, '不支持的请求方法', null, 405)

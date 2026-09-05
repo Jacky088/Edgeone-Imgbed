@@ -22,7 +22,7 @@
             {{ isDragging ? '快松手！' : '点击或拖拽上传' }}
           </p>
           <p class="text-sm text-gray-400 dark:text-gray-500">
-            支持 JPG, PNG, GIF, WebP (最大 5MB)，可批量多选或 Ctrl+V 粘贴
+            支持 JPG, PNG, GIF, WebP (最大 5MB)，可批量多选、Ctrl+V 粘贴或拖入整个文件夹
           </p>
         </div>
       </div>
@@ -46,16 +46,19 @@
            <button
             @click.stop="clearAll"
             class="absolute -right-2 -top-2 rounded-full bg-white text-red-500 shadow-md hover:text-red-600 dark:bg-gray-800 dark:text-red-400"
-           >
+          >
              <XCircle class="h-5 w-5" />
-           </button>
+          </button>
         </div>
         <div class="text-center">
           <p class="max-w-[200px] truncate text-sm font-medium text-gray-900 dark:text-gray-100">{{ displayTask.rawName }}</p>
           <div class="mt-1 flex items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-400">
             <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">{{ (displayTask.rawSize / 1024).toFixed(1) }} KB</span>
-            <span>→</span>
-            <span class="rounded bg-green-50 px-1.5 py-0.5 text-green-600 dark:bg-green-900/30 dark:text-green-400">减少 {{ displayTask.compressionRatio.toFixed(0) }}%</span>
+            <template v-if="displayTask.compressionRatio > 0">
+              <span>→</span>
+              <span class="rounded bg-green-50 px-1.5 py-0.5 text-green-600 dark:bg-green-900/30 dark:text-green-400">减少 {{ displayTask.compressionRatio.toFixed(0) }}%</span>
+            </template>
+            <span v-else class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">原图直传</span>
           </div>
           <div v-if="tasks.length > 1" class="mt-2 inline-flex rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
             共 {{ tasks.length }} 张，已就绪 {{ readyCount }}
@@ -169,6 +172,7 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { toast } from 'vue-sonner'
 import { UploadCloud, XCircle, Loader2, FileImage, CheckCircle2 } from 'lucide-vue-next'
+import { useUploadSettings } from '@/composables/useUploadSettings'
 
 interface Props {
   maxWidth?: number
@@ -218,7 +222,8 @@ interface RejectedFile {
 }
 
 // 批量上传任务：queued → processing(压缩) → ready → uploading → success / error
-interface UploadTask {  id: string
+interface UploadTask {
+  id: string
   rawFile: File
   rawName: string
   rawSize: number
@@ -268,7 +273,11 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   'update:uploadInfo': [uploadInfo: UploadInfo]
+  /** 一批上传全部结束（无论成败），供父组件做自动复制等收尾 */
+  'upload:finished': []
 }>()
+
+const { settings } = useUploadSettings()
 
 const tasks = ref<UploadTask[]>([])
 const rejectedFiles = ref<RejectedFile[]>([])
@@ -297,6 +306,33 @@ const canUpload = computed(
     tasks.value.some((t) => t.status === 'ready') &&
     !tasks.value.some((t) => t.status === 'processing'),
 )
+
+// 按命名规则生成存储文件名（保留原扩展名）
+function buildStoredName(originalName: string): string {
+  const ext = (originalName.match(/\.\w+$/)?.[0] || '').toLowerCase()
+  const base = originalName.replace(/\.\w+$/, '')
+  if (settings.value.namingRule === 'timestamp') {
+    const d = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+    return `${ts}${ext}`
+  }
+  if (settings.value.namingRule === 'random') {
+    return `${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}${ext}`
+  }
+  return originalName
+}
+
+// 粘贴的截图通常是无意义名字（image.png 等），自动改成可读的 screenshot-时间戳
+function isMeaninglessName(name: string): boolean {
+  return /^(image|截图|screenshot|屏幕截图)[\s\S]*\.(png|jpe?g|webp|gif|bmp)$/i.test(name)
+}
+
+function buildScreenshotName(): string {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `screenshot-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.png`
+}
 
 async function compressImageToWebp(
   file: File,
@@ -522,19 +558,36 @@ async function handleFiles(list: File[]): Promise<void> {
     processingIndex.value = i + 1
     t.status = 'processing'
     try {
-      const { compressedFile, width, height } = await compressImageToWebp(
-        t.rawFile,
-        props.quality,
-        props.maxWidth,
-        props.maxHeight,
-      )
-      t.compressionRatio = ((t.rawSize - compressedFile.size) / t.rawSize) * 100
-      t.file = compressedFile
-      t.width = width
-      t.height = height
+      // GIF 始终跳过压缩以保留动画；开启"保持原图"时全部跳过
+      const skipCompress =
+        t.rawFile.type === 'image/gif' || settings.value.keepOriginal
+
+      if (skipCompress) {
+        // 原图直传：按命名规则重命名，尺寸直接读取
+        const storedName = buildStoredName(t.rawName)
+        t.file = new File([t.rawFile], storedName, { type: t.rawFile.type })
+        const dim = await readImageSize(t.rawFile)
+        t.width = dim.width
+        t.height = dim.height
+        t.compressionRatio = 0
+      } else {
+        const { compressedFile, width, height } = await compressImageToWebp(
+          t.rawFile,
+          props.quality,
+          props.maxWidth,
+          props.maxHeight,
+        )
+        t.compressionRatio = ((t.rawSize - compressedFile.size) / t.rawSize) * 100
+        // 压缩后按命名规则重命名（保留 .webp 扩展名）
+        t.file = new File([compressedFile], buildStoredName(compressedFile.name), {
+          type: 'image/webp',
+        })
+        t.width = width
+        t.height = height
+      }
 
       if (props.generateThumbnail) {
-        const thumbnail = await generateThumbnailImage(compressedFile)
+        const thumbnail = await generateThumbnailImage(t.file)
         t.thumbnailFile = thumbnail.thumbnailFile
         t.thumbnailWidth = thumbnail.width
         t.thumbnailHeight = thumbnail.height
@@ -547,6 +600,21 @@ async function handleFiles(list: File[]): Promise<void> {
       t.errorMsg = err instanceof Error ? err.message : '图片处理失败'
     }
   }
+}
+
+// 读取图片原始尺寸（原图直传时 canvas 压缩管线被跳过）
+function readImageSize(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.readAsDataURL(file)
+    reader.onload = (e: ProgressEvent<FileReader>) => {
+      const img = new Image()
+      img.src = e.target?.result as string
+      img.onload = () => resolve({ width: img.width, height: img.height })
+      img.onerror = () => reject(new Error('图片加载失败'))
+    }
+    reader.onerror = () => reject(new Error('文件读取失败'))
+  })
 }
 
 // 释放任务预览的 objectURL，避免内存泄漏
@@ -571,7 +639,11 @@ function onPaste(e: ClipboardEvent): void {
   const files = Array.from(e.clipboardData?.files || [])
   if (files.length > 0) {
     e.preventDefault()
-    handleFiles(files)
+    // 粘贴的截图名字无意义（image.png 等），自动改成可读的 screenshot-时间戳
+    const renamed = files.map((f) =>
+      isMeaninglessName(f.name) ? new File([f], buildScreenshotName(), { type: f.type }) : f,
+    )
+    handleFiles(renamed)
   }
 }
 
@@ -606,6 +678,45 @@ function onWindowDrop(e: DragEvent): void {
   if (list.length > 0) {
     handleFiles(list)
   }
+}
+
+// 递归收集拖入文件夹里的所有文件（webkitGetAsEntry，Chrome/Edge/Safari 支持）
+async function collectFilesFromEntries(items: DataTransferItemList): Promise<File[]> {
+  const entries: FileSystemEntry[] = []
+  for (const item of Array.from(items)) {
+    const entry = item.webkitGetAsEntry?.()
+    if (entry) entries.push(entry)
+  }
+  if (entries.length === 0) return []
+
+  const files: File[] = []
+  const walk = async (entry: FileSystemEntry): Promise<void> => {
+    if (entry.isFile) {
+      const fileEntry = entry as FileSystemFileEntry
+      const file = await new Promise<File | null>((resolve) =>
+        fileEntry.file(resolve, () => resolve(null)),
+      )
+      if (file) files.push(file)
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader()
+      const children = await new Promise<FileSystemEntry[]>((resolve) => {
+        const all: FileSystemEntry[] = []
+        const readBatch = () =>
+          reader.readEntries(
+            (batch) => {
+              if (batch.length === 0) return resolve(all)
+              all.push(...batch)
+              readBatch()
+            },
+            () => resolve(all),
+          )
+        readBatch()
+      })
+      for (const child of children) await walk(child)
+    }
+  }
+  for (const entry of entries) await walk(entry)
+  return files
 }
 
 onMounted(() => {
@@ -733,7 +844,9 @@ async function retryTask(t: UploadTask): Promise<void> {
   }
 }
 
-// 串行上传：逐张上传并写记录，单张失败不中断批次
+// 并发上传：同时传 CONCURRENCY 张，单张失败不中断批次
+const CONCURRENCY = 3
+
 async function startUpload(): Promise<void> {
   const pending = tasks.value.filter((t) => t.status === 'ready')
   if (pending.length === 0) {
@@ -744,13 +857,17 @@ async function startUpload(): Promise<void> {
   uploading.value = true
   errorMsg.value = ''
 
-  for (let i = 0; i < tasks.value.length; i++) {
-    const t = tasks.value[i]
-    if (!t) continue
-    if (t.status !== 'ready' || !t.file) continue
-    uploadIndex.value = i + 1
-    await uploadSingle(t)
+  let cursor = 0
+  const total = tasks.value.length
+  const worker = async () => {
+    while (cursor < total) {
+      const t = tasks.value[cursor++]
+      if (!t || t.status !== 'ready' || !t.file) continue
+      uploadIndex.value = total - pending.length + pending.filter((p) => p.status === 'uploading').length + 1
+      await uploadSingle(t)
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker))
 
   uploading.value = false
 
@@ -763,5 +880,6 @@ async function startUpload(): Promise<void> {
   } else {
     toast.error('上传失败')
   }
+  emit('upload:finished')
 }
 </script>

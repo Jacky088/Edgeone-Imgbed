@@ -1,7 +1,9 @@
 import crypto from 'node:crypto'
 
-// 访问 token 有效期：24 小时
+// 访问 token 有效期：默认 24 小时
 const AUTH_TOKEN_TTL_MS = 24 * 60 * 60 * 1000
+// "记住我" token 有效期：30 天
+const REMEMBER_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 /**
  * 获取认证密钥：优先使用 AUTH_SECRET 环境变量，
@@ -13,10 +15,12 @@ function getAuthSecret(): string {
 
 /**
  * 签发访问 token（HMAC-SHA256 签名 + 过期时间，替代旧的固定字符串）
+ * @param remember 勾选"记住我"时签发 30 天长效 token
  */
-function signAuthToken(): string {
+function signAuthToken(remember: boolean = false): string {
+  const ttl = remember ? REMEMBER_TOKEN_TTL_MS : AUTH_TOKEN_TTL_MS
   const payload = Buffer.from(
-    JSON.stringify({ exp: Date.now() + AUTH_TOKEN_TTL_MS, nonce: crypto.randomUUID() }),
+    JSON.stringify({ exp: Date.now() + ttl, nonce: crypto.randomUUID() }),
   ).toString('base64url')
   const sig = crypto
     .createHmac('sha256', getAuthSecret())
@@ -227,4 +231,3 @@ function extractImagePath(url: string): string {
 }
 
 export { uploadToCnb, createProxyHandler, signAuthToken, verifyAuthToken, detectImageMime, securePasswordCompare, extractImagePath }
-

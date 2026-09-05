@@ -66,6 +66,7 @@ instance.interceptors.response.use(
     // 处理 401 未授权错误
     if (error.response?.status === 401) {
       sessionStorage.removeItem('site_access_token')
+      localStorage.removeItem('site_access_token')
       // 如果不在登录页，则跳转到登录页
       if (window.location.pathname !== '/login') {
         window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname)}`

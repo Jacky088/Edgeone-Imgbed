@@ -35,8 +35,9 @@ const router = createRouter({
 
 // [新增] 全局前置守卫
 router.beforeEach((to, from, next) => {
-  // 1. 检查 sessionStorage 是否有 token
-  const isAuthenticated = sessionStorage.getItem('site_access_token')
+  // 1. 检查是否有 token：sessionStorage 优先，其次 localStorage（"记住我"30 天）
+  const isAuthenticated =
+    sessionStorage.getItem('site_access_token') || localStorage.getItem('site_access_token')
 
   // 2. 如果要去的是登录页，且已经登录，直接去首页
   if (to.name === 'login' && isAuthenticated) {

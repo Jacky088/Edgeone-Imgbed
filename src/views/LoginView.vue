@@ -9,6 +9,7 @@ import ThemeToggle from '@/components/ThemeToggle.vue'
 
 const password = ref('')
 const loading = ref(false)
+const remember = ref(false)
 const router = useRouter()
 
 const handleLogin = async () => {
@@ -18,11 +19,19 @@ const handleLogin = async () => {
   try {
     const { data } = await axios.post('/auth/verify', {
       password: password.value,
+      remember: remember.value,
     })
 
     if (data.code === 0) {
       // 存储服务端签发的动态 token（含 HMAC 签名与过期时间）
-      sessionStorage.setItem('site_access_token', data.data?.token || '')
+      // 勾选"记住我"时存 localStorage（30 天 token），否则存 sessionStorage
+      const token = data.data?.token || ''
+      if (remember.value) {
+        localStorage.setItem('site_access_token', token)
+        sessionStorage.setItem('site_access_token', token)
+      } else {
+        sessionStorage.setItem('site_access_token', token)
+      }
       toast.success('验证通过')
       // 校验 redirect 仅允许站内路径，防止 //evil.com 形式的开放跳转
       const rawRedirect = (router.currentRoute.value.query.redirect as string) || '/'
@@ -72,11 +81,20 @@ const handleLogin = async () => {
           @keyup.enter="handleLogin"
         />
 
+        <label class="flex cursor-pointer items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+          <input
+            v-model="remember"
+            type="checkbox"
+            class="h-4 w-4 cursor-pointer accent-blue-600"
+          />
+          记住我 30 天（公用电脑慎选）
+        </label>
+
         <Button
           class="w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all
                  brand-gradient hover:brightness-110
                  hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm"
-          @click="handleLogin" 
+          @click="handleLogin"
           :disabled="loading"
         >
           {{ loading ? '验证中...' : '解锁访问' }}
