@@ -192,7 +192,11 @@
 /* ========== 全站统一 toast 胶囊样式（vue-sonner） ========== */
 /* 日间：深色胶囊 + 白字；夜间：浅色胶囊 + 深字；关闭钮嵌在胶囊内右侧 */
 [data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
-  height: 44px;
+  /* 用 min-height 而非固定 height：vue-sonner 悬停展开时会按挂载时实测的自然高度
+     （--initial-height）覆盖 height，固定值会导致悬停瞬间变窄闪烁 */
+  min-height: 44px;
+  /* 剔除 height 过渡，避免展开/收起时高度动画引起跳动 */
+  transition: transform 400ms, opacity 400ms, box-shadow 200ms;
   align-items: center;
   border-radius: 9999px !important;
   border: none !important;
