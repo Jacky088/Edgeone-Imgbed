@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import axios from '@/utils/axios'
 import {
   Trash2,
@@ -43,10 +44,18 @@ interface ImageRecord {
 }
 
 const { settings } = useUploadSettings()
+const route = useRoute()
+const router = useRouter()
 
 const list = ref<ImageRecord[]>([])
 const loading = ref(false)
-const trashMode = ref(false)
+// 回收站是 /admin 的一种视图（/admin?view=trash），与侧栏「回收站」导航项联动
+const trashMode = computed({
+  get: () => route.query.view === 'trash',
+  set: (val: boolean) => {
+    router.replace({ path: '/admin', query: val ? { view: 'trash' } : {} })
+  },
+})
 const stats = ref<{ count: number; totalSize: number; trashed: number } | null>(null)
 
 // 前端搜索 + 类型筛选 + 排序 + 分页（数据已整表拉取，不再额外请求）
@@ -101,8 +110,15 @@ const pagedList = computed(() =>
   filteredList.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
 )
 
-watch([keyword, typeFilter, trashMode], () => {
+watch([keyword, typeFilter], () => {
   page.value = 1
+})
+// 从导航切换回收站/正常列表时重置分页并重新拉取
+watch(trashMode, () => {
+  page.value = 1
+  clearSelection()
+  focusIndex.value = -1
+  fetchList()
 })
 watch(totalPages, () => {
   if (page.value > totalPages.value) page.value = totalPages.value
@@ -435,13 +451,6 @@ const copyFormat = (item: ImageRecord, key: 'url' | 'markdown' | 'html' | 'bbcod
 // 快捷键帮助卡片
 const showShortcuts = ref(false)
 
-const switchToTrash = (toTrash: boolean) => {
-  trashMode.value = toTrash
-  clearSelection()
-  focusIndex.value = -1
-  fetchList()
-}
-
 onMounted(() => {
   fetchList()
   fetchStats()
@@ -497,7 +506,7 @@ onUnmounted(() => {
           </span>
           <button
             v-if="stats.trashed > 0 || trashMode"
-            @click="switchToTrash(!trashMode)"
+            @click="trashMode = !trashMode"
             class="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 transition-colors"
             :class="
               trashMode

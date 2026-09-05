@@ -9,21 +9,37 @@ import {
   LogOut,
   Cloud,
   Github,
+  Archive,
 } from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 
 const route = useRoute()
 const router = useRouter()
 
-const menu = [
-  { name: 'home', label: '上传图片', icon: CloudUpload, to: '/' },
-  { name: 'admin', label: '图片列表', icon: GalleryVertical, to: '/admin' },
-  { name: 'settings', label: '我的设置', icon: Settings, to: '/settings' },
-  { name: 'about', label: '关于项目', icon: Info, to: '/about' },
-] as const
+// 回收站是图片列表的一种视图（/admin?view=trash），但作为一级导航项单独露出
+const menu = computed(() => [
+  { label: '上传图片', icon: CloudUpload, to: '/', active: route.name === 'home' },
+  {
+    label: '图片列表',
+    icon: GalleryVertical,
+    to: '/admin',
+    active: route.name === 'admin' && route.query.view !== 'trash',
+  },
+  {
+    label: '回收站',
+    icon: Archive,
+    to: { path: '/admin', query: { view: 'trash' } },
+    active: route.name === 'admin' && route.query.view === 'trash',
+  },
+  { label: '我的设置', icon: Settings, to: '/settings', active: route.name === 'settings' },
+  { label: '关于项目', icon: Info, to: '/about', active: route.name === 'about' },
+])
 
 // header 展示当前页面标题（大屏左侧品牌区已有站名，避免重复）
-const pageTitle = computed(() => menu.find((item) => item.name === route.name)?.label || 'Edgeone-Imgbed')
+const pageTitle = computed(() => {
+  if (route.name === 'admin' && route.query.view === 'trash') return '回收站'
+  return menu.value.find((item) => item.active)?.label || 'Edgeone-Imgbed'
+})
 
 const handleLogout = () => {
   sessionStorage.removeItem('site_access_token')
@@ -34,9 +50,9 @@ const handleLogout = () => {
 
 <template>
   <div class="aurora-bg relative min-h-dvh w-full overflow-x-hidden transition-colors duration-500">
-    <div class="mx-auto flex min-h-dvh max-w-[1400px] gap-8 p-3 sm:p-6 lg:p-8">
-      <!-- 左：品牌落地区（仅大屏 >= 1024px 显示） -->
-      <aside class="hidden w-[340px] shrink-0 flex-col justify-between py-8 lg:flex">
+    <div class="mx-auto flex min-h-dvh max-w-[1920px] gap-8 p-3 sm:p-6 lg:p-8">
+      <!-- 左：品牌落地区（仅大屏 >= 1024px 显示，超宽屏上适当加宽避免主区域过宽难读） -->
+      <aside class="hidden w-[340px] shrink-0 flex-col justify-between py-8 lg:flex 2xl:w-[420px]">
         <div>
           <div class="mb-8 flex items-center gap-4">
             <div class="relative flex h-14 w-14 items-center justify-center rounded-2xl brand-gradient text-white shadow-xl shadow-blue-500/30 ring-1 ring-white/20">
@@ -153,12 +169,12 @@ const handleLogout = () => {
           <nav class="hidden w-52 shrink-0 flex-col gap-1.5 border-r border-gray-100/80 bg-white/40 p-4 backdrop-blur lg:flex dark:border-gray-800/50 dark:bg-gray-900/40">
             <RouterLink
               v-for="item in menu"
-              :key="item.name"
+              :key="item.label"
               :to="item.to"
-              :aria-current="route.name === item.name ? 'page' : undefined"
+              :aria-current="item.active ? 'page' : undefined"
               class="group flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all"
               :class="
-                route.name === item.name
+                item.active
                   ? 'bg-gradient-to-r from-blue-500/15 to-sky-400/10 text-blue-700 ring-1 ring-blue-500/20 dark:text-blue-300 dark:ring-blue-500/30'
                   : 'text-gray-600 hover:bg-gray-100/70 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-gray-100'
               "
@@ -166,7 +182,7 @@ const handleLogout = () => {
               <component
                 :is="item.icon"
                 class="h-[18px] w-[18px]"
-                :class="route.name === item.name ? 'text-blue-600 dark:text-blue-300' : 'text-gray-400 group-hover:text-gray-600 dark:text-gray-500 dark:group-hover:text-gray-300'"
+                :class="item.active ? 'text-blue-600 dark:text-blue-300' : 'text-gray-400 group-hover:text-gray-600 dark:text-gray-500 dark:group-hover:text-gray-300'"
               />
               {{ item.label }}
             </RouterLink>
@@ -182,12 +198,12 @@ const handleLogout = () => {
         <nav class="flex shrink-0 items-stretch border-t border-gray-100/80 bg-white/80 backdrop-blur-xl dark:border-gray-800/50 dark:bg-gray-900/80 lg:hidden" style="padding-bottom: env(safe-area-inset-bottom)">
           <RouterLink
             v-for="item in menu"
-            :key="item.name"
+            :key="item.label"
             :to="item.to"
-            :aria-current="route.name === item.name ? 'page' : undefined"
+            :aria-current="item.active ? 'page' : undefined"
             class="flex flex-1 flex-col items-center justify-center gap-1 py-2 transition-colors"
             :class="
-              route.name === item.name
+              item.active
                 ? 'text-blue-600 dark:text-blue-300'
                 : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'
             "
@@ -195,9 +211,9 @@ const handleLogout = () => {
             <!-- 激活态：图标背后的 pill 高亮，与桌面侧栏选中样式呼应 -->
             <span
               class="flex h-8 w-16 items-center justify-center rounded-full transition-colors"
-              :class="route.name === item.name ? 'bg-blue-500/15 dark:bg-blue-400/15' : ''"
+              :class="item.active ? 'bg-blue-500/15 dark:bg-blue-400/15' : ''"
             >
-              <component :is="item.icon" class="h-6 w-6" :stroke-width="route.name === item.name ? 2.5 : 2" />
+              <component :is="item.icon" class="h-6 w-6" :stroke-width="item.active ? 2.5 : 2" />
             </span>
             <span class="text-[11px] font-medium">{{ item.label }}</span>
           </RouterLink>
