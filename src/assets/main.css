@@ -188,3 +188,59 @@
     0 25px 50px -12px rgba(0, 0, 0, 0.5),
     0 10px 20px -5px rgba(0, 0, 0, 0.3);
 }
+
+/* ========== 全站统一 toast 胶囊样式（vue-sonner） ========== */
+/* 日间：深色胶囊 + 白字；夜间：浅色胶囊 + 深字；关闭钮嵌在胶囊内右侧 */
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
+  height: 44px;
+  align-items: center;
+  border-radius: 9999px !important;
+  border: none !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16) !important;
+  padding: 0 10px 0 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
+  background: #1f2937 !important;
+  color: #ffffff !important;
+}
+.dark [data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
+  background: #f3f4f6 !important;
+  color: #111827 !important;
+}
+[data-sonner-toaster] [data-sonner-toast] [data-icon] svg {
+  color: #f8fafc !important;
+}
+.dark [data-sonner-toaster] [data-sonner-toast] [data-icon] svg {
+  color: #1f2937 !important;
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-close-button] {
+  /* 覆盖默认的“悬在胶囊外角上”定位，改为嵌入胶囊内右侧 */
+  top: 50% !important;
+  right: 10px !important;
+  left: unset !important;
+  bottom: unset !important;
+  transform: translateY(-50%) !important;
+  position: absolute;
+  height: 24px;
+  width: 24px;
+  border: none !important;
+  background: transparent !important;
+  color: inherit;
+  opacity: 0.55;
+  transition: opacity 150ms ease, background 150ms ease;
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled='true']:hover [data-close-button],
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-close-button]:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+.dark [data-sonner-toaster] [data-sonner-toast][data-styled='true']:hover [data-close-button],
+.dark [data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-close-button]:hover {
+  background: rgba(0, 0, 0, 0.08) !important;
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-content] {
+  /* 给右侧关闭钮留出空间 */
+  padding-right: 26px;
+}

@@ -1,24 +1,11 @@
 <script setup lang="ts">
 import { RouterView } from 'vue-router'
 import { Toaster } from 'vue-sonner'
-import { useTheme } from '@/composables/useTheme'
-
-const { theme } = useTheme()
 </script>
 
 <template>
   <RouterView />
 
-  <!-- 紧凑玻璃 toast：圆角 + 毛玻璃 + 细描边，与全站玻璃卡片语言一致；右下角避免遮挡标题栏 -->
-  <Toaster
-    position="bottom-right"
-    :theme="theme"
-    richColors
-    closeButton
-    class="!z-[99999]"
-    :toastOptions="{
-      class: '!rounded-2xl !border !bg-white/85 !border-white/60 !text-sm !font-medium !shadow-xl backdrop-blur-xl dark:!bg-gray-900/85 dark:!border-white/10',
-      duration: 2500,
-    }"
-  />
+  <!-- 全站统一 toast：顶部居中胶囊（日间深底白字 / 夜间浅底深字），配色与关闭钮样式统一在 main.css 覆盖 -->
+  <Toaster position="top-center" closeButton :toastOptions="{ duration: 2500 }" />
 </template>
