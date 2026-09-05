@@ -51,8 +51,10 @@ const handleLogout = () => {
 <template>
   <div class="aurora-bg relative min-h-dvh w-full overflow-x-hidden transition-colors duration-500">
     <div class="mx-auto flex min-h-dvh max-w-[1920px] gap-8 p-3 sm:p-6 lg:p-8">
-      <!-- 左：品牌落地区（仅大屏 >= 1024px 显示，超宽屏上适当加宽避免主区域过宽难读） -->
-      <aside class="hidden w-[340px] shrink-0 flex-col justify-between py-8 lg:flex 2xl:w-[420px]">
+      <!-- 左：品牌落地区
+           响应式策略：保证右侧应用窗口始终有足够宽度，宁可隐藏品牌区也不挤压内容。
+           xl (>=1280px) 才显示品牌区；1024–1279px 只显示应用窗口 + 桌面侧栏。 -->
+      <aside class="hidden w-[340px] shrink-0 flex-col justify-between py-8 xl:flex 2xl:w-[420px]">
         <div>
           <div class="mb-8 flex items-center gap-4">
             <div class="relative flex h-14 w-14 items-center justify-center rounded-2xl brand-gradient text-white shadow-xl shadow-blue-500/30 ring-1 ring-white/20">
@@ -97,10 +99,7 @@ const handleLogout = () => {
         </div>
 
         <!-- 装饰：云朵 + 流动几何图形（纯 CSS，动态效果更明显） -->
-        <div class="relative hidden h-72 select-none lg:block">
-          <!-- 底部淡出光晕 -->
-          <div class="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-blue-200/25 to-transparent dark:from-blue-900/25"></div>
-
+        <div class="relative hidden h-72 select-none xl:block">
           <!-- 云朵，整体缓慢上下浮动 -->
           <div class="absolute bottom-0 left-1/2 -translate-x-1/2 animate-bob">
             <div class="relative h-24 w-56">
@@ -108,13 +107,13 @@ const handleLogout = () => {
               <div class="absolute bottom-10 left-2 h-12 w-12 rounded-full bg-gradient-to-br from-blue-100/80 to-sky-200/60 backdrop-blur dark:from-blue-900/40 dark:to-sky-900/30"></div>
               <div class="absolute bottom-8 right-0 h-10 w-10 rounded-full bg-gradient-to-br from-blue-100/80 to-sky-200/60 backdrop-blur dark:from-blue-900/40 dark:to-sky-900/30"></div>
               <div class="absolute bottom-12 left-14 h-12 w-12 rounded-full bg-gradient-to-br from-blue-100/80 to-sky-200/60 backdrop-blur dark:from-blue-900/40 dark:to-sky-900/30"></div>
-              <!-- 云朵上的 GitHub 链接（左下角，点击新窗口打开仓库） -->
+              <!-- 云朵上的 GitHub 链接（左下角，点击新窗口打开仓库；置于最顶层避免被几何图形遮挡） -->
               <a
                 href="https://github.com/Jacky088/Edgeone-Imgbed"
                 target="_blank"
                 rel="noopener noreferrer"
                 title="在 GitHub 上查看项目"
-                class="absolute bottom-8 left-1/2 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full bg-gradient-to-br from-gray-900 to-gray-700 text-white shadow-lg shadow-gray-900/30 transition-all hover:scale-110 hover:from-gray-800 hover:to-gray-600"
+                class="absolute bottom-8 left-1/2 z-20 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full bg-gradient-to-br from-gray-900 to-gray-700 text-white shadow-lg shadow-gray-900/30 transition-all hover:scale-110 hover:from-gray-800 hover:to-gray-600"
               >
                 <Github class="h-7 w-7" />
               </a>

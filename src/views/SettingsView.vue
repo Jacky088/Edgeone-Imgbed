@@ -267,17 +267,18 @@ const handleReset = () => {
 
       <!-- 列表每页条数 -->
       <div class="glass-card-premium rounded-3xl p-6">
-        <div class="flex items-center justify-between gap-4">
+        <!-- 窄窗口时上下堆叠，避免文字被挤压成竖排 -->
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div class="flex items-start gap-3">
             <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-500 dark:bg-blue-900/30 dark:text-blue-400">
               <Rows3 class="h-5 w-5" />
             </div>
-            <div>
-              <p class="text-sm font-bold text-gray-900 dark:text-white">列表每页条数</p>
+            <div class="min-w-0">
+              <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">列表每页条数</p>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">图片列表分页大小：当前 {{ settings.pageSize }} 条</p>
             </div>
           </div>
-          <div class="flex gap-2">
+          <div class="flex shrink-0 gap-2">
             <button
               v-for="n in PAGE_SIZE_OPTIONS"
               :key="n"
@@ -297,12 +298,12 @@ const handleReset = () => {
 
       <!-- 外观主题 -->
       <div class="glass-card-premium rounded-3xl p-6">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-sm font-bold text-gray-900 dark:text-white">外观主题</p>
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+          <div class="min-w-0">
+            <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">外观主题</p>
             <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">日间 / 夜间 / 跟随系统</p>
           </div>
-          <ThemeToggle />
+          <div class="shrink-0"><ThemeToggle /></div>
         </div>
       </div>
 
