@@ -96,8 +96,8 @@ const handleLogout = () => {
           </div>
         </div>
 
-        <!-- 装饰：云朵 + 浮动小球（纯 CSS，动态效果更明显） -->
-        <div class="relative hidden h-72 select-none lg:block">
+        <!-- 装饰：云朵 + 大面积流动淡色块（纯 CSS，动态效果更明显） -->
+        <div class="relative hidden h-72 select-none overflow-visible lg:block">
           <!-- 底部淡出光晕 -->
           <div class="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-blue-200/25 to-transparent dark:from-blue-900/25"></div>
 
@@ -121,19 +121,13 @@ const handleLogout = () => {
             </div>
           </div>
 
-          <!-- 漂浮小球：更多、更明显（带辉光） -->
-          <div class="absolute left-[5%] top-16 h-4 w-4 animate-float rounded-full bg-sky-400 shadow-[0_0_14px_3px_rgba(56,189,248,0.7)]"></div>
-          <div class="absolute left-[26%] top-3 h-3.5 w-3.5 animate-drift rounded-full bg-emerald-400 shadow-[0_0_12px_3px_rgba(52,211,153,0.7)] [animation-delay:0.5s]"></div>
-          <div class="absolute left-[74%] top-12 h-4 w-4 animate-float rounded-full bg-violet-400 shadow-[0_0_14px_3px_rgba(167,139,250,0.7)] [animation-delay:1.2s]"></div>
-          <div class="absolute left-[50%] top-6 h-3 w-3 animate-drift rounded-full bg-fuchsia-400 shadow-[0_0_12px_3px_rgba(232,121,249,0.7)] [animation-delay:0.9s]"></div>
-          <div class="absolute left-[86%] top-2 h-3.5 w-3.5 animate-float rounded-full bg-blue-400 shadow-[0_0_12px_3px_rgba(96,165,250,0.7)] [animation-delay:1.6s]"></div>
-          <div class="absolute left-[12%] top-6 h-2.5 w-2.5 animate-drift rounded-full bg-cyan-400 shadow-[0_0_10px_2px_rgba(34,211,238,0.7)] [animation-delay:2s]"></div>
-          <div class="absolute left-[64%] top-4 h-3 w-3 animate-float rounded-full bg-sky-400 shadow-[0_0_12px_3px_rgba(56,189,248,0.8)] [animation-delay:2.4s]"></div>
-          <div class="absolute left-[36%] top-14 h-3.5 w-3.5 animate-drift rounded-full bg-indigo-400 shadow-[0_0_12px_3px_rgba(129,140,248,0.7)] [animation-delay:1.8s]"></div>
-          <div class="absolute left-[58%] top-24 h-3 w-3 animate-float rounded-full bg-teal-400 shadow-[0_0_12px_3px_rgba(45,212,191,0.7)] [animation-delay:0.3s]"></div>
-          <div class="absolute left-[90%] top-20 h-2.5 w-2.5 animate-drift rounded-full bg-sky-300 shadow-[0_0_10px_2px_rgba(125,211,252,0.8)] [animation-delay:2.8s]"></div>
-          <div class="absolute left-[20%] top-28 h-3 w-3 animate-float rounded-full bg-emerald-300 shadow-[0_0_12px_3px_rgba(110,231,183,0.7)] [animation-delay:3.2s]"></div>
-          <div class="absolute left-[78%] top-8 h-3.5 w-3.5 animate-drift rounded-full bg-violet-400 shadow-[0_0_12px_3px_rgba(167,139,250,0.7)] [animation-delay:2.2s]"></div>
+          <!-- 大面积流动淡色块：与主题同色系，缓慢漂移呼吸 -->
+          <div class="absolute -left-16 top-4 h-48 w-48 animate-blob rounded-full bg-gradient-to-br from-blue-300/45 to-sky-200/30 blur-3xl [animation-delay:0s] dark:from-blue-700/25 dark:to-sky-800/15"></div>
+          <div class="absolute left-[30%] top-24 h-56 w-56 animate-blob rounded-full bg-gradient-to-br from-violet-300/40 to-indigo-200/25 blur-3xl [animation-delay:3s] dark:from-violet-700/20 dark:to-indigo-800/15"></div>
+          <div class="absolute -right-10 top-10 h-44 w-44 animate-blob rounded-full bg-gradient-to-br from-emerald-300/40 to-teal-200/25 blur-3xl [animation-delay:6s] dark:from-emerald-700/20 dark:to-teal-800/15"></div>
+          <div class="absolute -left-8 bottom-16 h-52 w-52 animate-blob rounded-full bg-gradient-to-br from-sky-300/45 to-cyan-200/30 blur-3xl [animation-delay:4.5s] dark:from-sky-700/25 dark:to-cyan-800/15"></div>
+          <div class="absolute left-[38%] bottom-2 h-40 w-40 animate-blob rounded-full bg-gradient-to-br from-fuchsia-300/35 to-pink-200/20 blur-3xl [animation-delay:7.5s] dark:from-fuchsia-700/18 dark:to-pink-800/12"></div>
+          <div class="absolute -right-6 bottom-24 h-48 w-48 animate-blob rounded-full bg-gradient-to-br from-indigo-300/40 to-blue-200/25 blur-3xl [animation-delay:1.5s] dark:from-indigo-700/20 dark:to-blue-800/15"></div>
         </div>
       </aside>
 

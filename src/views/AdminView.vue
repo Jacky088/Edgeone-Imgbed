@@ -666,6 +666,23 @@ onUnmounted(() => {
         </div>
 
         <template v-else>
+          <!-- 排序工具行：置于列表顶部，充当表头（列表与回收站共用） -->
+          <div class="flex flex-wrap items-center gap-2 border-b border-gray-100/50 px-4 py-2.5 text-xs sm:px-5 dark:border-gray-800/50">
+            <span class="text-gray-400 dark:text-gray-500">排序：</span>
+            <button
+              v-for="key in (['createdAt', 'size', 'name'] as const)"
+              :key="key"
+              @click="toggleSort(key)"
+              class="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-semibold transition-colors"
+              :class="sortKey === key ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800'"
+            >
+              {{ key === 'createdAt' ? '时间' : key === 'size' ? '大小' : '名称' }}
+              <ArrowUpDown v-if="sortKey !== key" class="h-3 w-3 opacity-40" />
+              <ChevronUp v-else-if="sortDir === 'asc'" class="h-3 w-3" />
+              <ChevronDown v-else class="h-3 w-3" />
+            </button>
+          </div>
+
           <!-- 单列表自适应布局：桌面/移动端同一结构，窄屏自动隐藏次要信息，保证不出现横向滚动 -->
           <div class="divide-y divide-gray-100/50 dark:divide-gray-800/50">
             <div
@@ -759,23 +776,6 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
-          </div>
-
-          <!-- 排序工具行：替代吸顶表头（单列表格无需表头，排序动作收进工具行） -->
-          <div class="flex flex-wrap items-center gap-2 border-t border-gray-100/50 px-4 py-2.5 text-xs dark:border-gray-800/50">
-            <span class="text-gray-400 dark:text-gray-500">排序：</span>
-            <button
-              v-for="key in (['createdAt', 'size', 'name'] as const)"
-              :key="key"
-              @click="toggleSort(key)"
-              class="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-semibold transition-colors"
-              :class="sortKey === key ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800'"
-            >
-              {{ key === 'createdAt' ? '时间' : key === 'size' ? '大小' : '名称' }}
-              <ArrowUpDown v-if="sortKey !== key" class="h-3 w-3 opacity-40" />
-              <ChevronUp v-else-if="sortDir === 'asc'" class="h-3 w-3" />
-              <ChevronDown v-else class="h-3 w-3" />
-            </button>
           </div>
 
           <!-- 分页 -->

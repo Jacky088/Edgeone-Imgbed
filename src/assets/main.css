@@ -14,6 +14,8 @@
   --animate-drift: drift 5.5s ease-in-out infinite;
   /* [新增] 云朵整体上下浮动 */
   --animate-bob: bob 6s ease-in-out infinite;
+  /* [新增] 品牌区大面积流动淡色块 */
+  --animate-blob: blob 14s ease-in-out infinite;
 }
 
 :root {
@@ -90,6 +92,14 @@
 @keyframes bob {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-8px); }
+}
+
+/* [新增] 大面积淡色块缓慢漂移 + 尺寸呼吸（配合 blur-3xl 形成流动感） */
+@keyframes blob {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.7; }
+  25% { transform: translate(24px, -18px) scale(1.12); opacity: 1; }
+  50% { transform: translate(-12px, 14px) scale(0.92); opacity: 0.65; }
+  75% { transform: translate(16px, 24px) scale(1.08); opacity: 0.95; }
 }
 
 .aurora-bg {
