@@ -96,8 +96,8 @@ const handleLogout = () => {
           </div>
         </div>
 
-        <!-- 装饰：云朵 + 大面积流动淡色块（纯 CSS，动态效果更明显） -->
-        <div class="relative hidden h-72 select-none overflow-visible lg:block">
+        <!-- 装饰：云朵 + 流动几何图形（纯 CSS，动态效果更明显） -->
+        <div class="relative hidden h-72 select-none lg:block">
           <!-- 底部淡出光晕 -->
           <div class="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-blue-200/25 to-transparent dark:from-blue-900/25"></div>
 
@@ -121,13 +121,15 @@ const handleLogout = () => {
             </div>
           </div>
 
-          <!-- 大面积流动淡色块：与主题同色系，缓慢漂移呼吸 -->
-          <div class="absolute -left-16 top-4 h-48 w-48 animate-blob rounded-full bg-gradient-to-br from-blue-300/45 to-sky-200/30 blur-3xl [animation-delay:0s] dark:from-blue-700/25 dark:to-sky-800/15"></div>
-          <div class="absolute left-[30%] top-24 h-56 w-56 animate-blob rounded-full bg-gradient-to-br from-violet-300/40 to-indigo-200/25 blur-3xl [animation-delay:3s] dark:from-violet-700/20 dark:to-indigo-800/15"></div>
-          <div class="absolute -right-10 top-10 h-44 w-44 animate-blob rounded-full bg-gradient-to-br from-emerald-300/40 to-teal-200/25 blur-3xl [animation-delay:6s] dark:from-emerald-700/20 dark:to-teal-800/15"></div>
-          <div class="absolute -left-8 bottom-16 h-52 w-52 animate-blob rounded-full bg-gradient-to-br from-sky-300/45 to-cyan-200/30 blur-3xl [animation-delay:4.5s] dark:from-sky-700/25 dark:to-cyan-800/15"></div>
-          <div class="absolute left-[38%] bottom-2 h-40 w-40 animate-blob rounded-full bg-gradient-to-br from-fuchsia-300/35 to-pink-200/20 blur-3xl [animation-delay:7.5s] dark:from-fuchsia-700/18 dark:to-pink-800/12"></div>
-          <div class="absolute -right-6 bottom-24 h-48 w-48 animate-blob rounded-full bg-gradient-to-br from-indigo-300/40 to-blue-200/25 blur-3xl [animation-delay:1.5s] dark:from-indigo-700/20 dark:to-blue-800/15"></div>
+          <!-- 流动几何图形：三角/圆/圆角方块，主题同色系，缓慢漂移旋转 -->
+          <div class="absolute left-[6%] top-6 h-16 w-16 animate-geo rounded-2xl bg-gradient-to-br from-sky-400/50 to-blue-500/35 [animation-delay:0s] dark:from-sky-500/30 dark:to-blue-600/20"></div>
+          <div class="absolute left-[30%] top-16 h-12 w-12 animate-geo rounded-full bg-gradient-to-br from-emerald-400/50 to-teal-500/35 [animation-delay:2.5s] dark:from-emerald-500/30 dark:to-teal-600/20"></div>
+          <div class="absolute left-[52%] top-4 h-14 w-14 animate-geo [clip-path:polygon(50%_0,100%_100%,0_100%)] bg-gradient-to-br from-violet-400/50 to-indigo-500/35 [animation-delay:5s] dark:from-violet-500/30 dark:to-indigo-600/20"></div>
+          <div class="absolute left-[74%] top-20 h-12 w-12 animate-geo rounded-[30%] bg-gradient-to-br from-cyan-400/50 to-sky-500/35 [animation-delay:7.5s] dark:from-cyan-500/30 dark:to-sky-600/20"></div>
+          <div class="absolute left-[14%] bottom-10 h-12 w-12 animate-geo [clip-path:polygon(0_0,100%_0,50%_100%)] bg-gradient-to-br from-blue-400/50 to-indigo-500/35 [animation-delay:4s] dark:from-blue-500/30 dark:to-indigo-600/20"></div>
+          <div class="absolute left-[42%] bottom-4 h-14 w-14 animate-geo rounded-full bg-gradient-to-br from-teal-400/50 to-emerald-500/35 [animation-delay:9s] dark:from-teal-500/30 dark:to-emerald-600/20"></div>
+          <div class="absolute left-[64%] bottom-14 h-12 w-12 animate-geo rounded-xl bg-gradient-to-br from-indigo-400/50 to-violet-500/35 [animation-delay:6.5s] dark:from-indigo-500/30 dark:to-violet-600/20"></div>
+          <div class="absolute left-[86%] top-8 h-12 w-12 animate-geo [clip-path:polygon(50%_0,100%_100%,0_100%)] bg-gradient-to-br from-sky-400/50 to-cyan-500/35 [animation-delay:1.5s] dark:from-sky-500/30 dark:to-cyan-600/20"></div>
         </div>
       </aside>
 
