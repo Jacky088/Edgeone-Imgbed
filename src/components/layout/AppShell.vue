@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
+import { computed } from 'vue'
 import {
   CloudUpload,
   GalleryVertical,
@@ -20,6 +21,9 @@ const menu = [
   { name: 'settings', label: '我的设置', icon: Settings, to: '/settings' },
   { name: 'about', label: '关于项目', icon: Info, to: '/about' },
 ] as const
+
+// header 展示当前页面标题（大屏左侧品牌区已有站名，避免重复）
+const pageTitle = computed(() => menu.find((item) => item.name === route.name)?.label || 'Edgeone-Imgbed')
 
 const handleLogout = () => {
   sessionStorage.removeItem('site_access_token')
@@ -53,7 +57,7 @@ const handleLogout = () => {
           <div class="mb-8 h-1 w-24 rounded-full brand-gradient"></div>
 
           <!-- 技术徽章 -->
-          <div class="flex flex-wrap gap-3">
+          <div class="flex flex-wrap items-center gap-3">
             <div class="flex items-center gap-2 rounded-full bg-white/70 px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm ring-1 ring-white/40 backdrop-blur dark:bg-white/10 dark:text-gray-200 dark:ring-white/10">
               <div class="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-sky-400 text-[10px] font-black text-white">EO</div>
               EdgeOne
@@ -62,6 +66,16 @@ const handleLogout = () => {
               <div class="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-emerald-400 to-teal-500 text-[10px] font-black text-white">CB</div>
               CloudBase
             </div>
+            <a
+              href="https://github.com/Jacky088/Edgeone-Imgbed"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="在 GitHub 上查看项目"
+              class="flex items-center gap-2 rounded-full bg-white/70 px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm ring-1 ring-white/40 backdrop-blur transition-all hover:-translate-y-0.5 hover:bg-gray-900 hover:text-white dark:bg-white/10 dark:text-gray-200 dark:ring-white/10 dark:hover:bg-white dark:hover:text-gray-900"
+            >
+              <Github class="h-4 w-4" />
+              GitHub
+            </a>
           </div>
         </div>
 
@@ -115,9 +129,7 @@ const handleLogout = () => {
               <Cloud class="h-4 w-4 sm:h-5 sm:w-5" :stroke-width="2.5" />
               <div class="absolute inset-0 rounded-xl bg-gradient-to-t from-black/10 to-transparent"></div>
             </div>
-            <span class="bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 bg-clip-text text-lg font-bold tracking-tight text-transparent dark:from-white dark:via-gray-200 dark:to-white sm:text-xl">
-              Edgeone-Imgbed
-            </span>
+            <span class="text-lg font-bold tracking-tight text-gray-900 dark:text-white sm:text-xl">{{ pageTitle }}</span>
           </div>
 
           <div class="flex items-center gap-1.5 sm:gap-2">
@@ -129,7 +141,7 @@ const handleLogout = () => {
             >
               <div class="absolute inset-0 rounded-xl bg-red-50 opacity-0 transition-opacity group-hover:opacity-100 dark:bg-red-900/10"></div>
               <LogOut class="relative h-4 w-4" />
-              <span class="relative ml-1.5 hidden font-medium sm:inline">注销</span>
+              <span class="relative ml-1.5 hidden font-medium sm:inline">退出</span>
             </button>
           </div>
         </header>

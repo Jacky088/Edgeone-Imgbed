@@ -2,7 +2,7 @@
 import FileUploader from '@/components/public/FileUploader.vue'
 import ResultCard from '@/components/ResultCard.vue'
 import AppShell from '@/components/layout/AppShell.vue'
-import { ref } from 'vue'
+import { ref, nextTick } from 'vue'
 import { toast } from 'vue-sonner'
 import { Link2, Braces, Trash2 } from 'lucide-vue-next'
 import { buildFormats, type UploadResult } from '@/utils/formatLinks'
@@ -13,9 +13,14 @@ const { settings } = useUploadSettings()
 
 // 批量上传：逐张收集上传结果
 const results = ref<UploadResult[]>([])
+const resultsSection = ref<HTMLElement | null>(null)
 
 const handleUploadSuccess = (info: UploadResult) => {
   results.value.push(info)
+  // 首张结果出现时滚动到结果区，避免用户看不到已生成的链接
+  if (results.value.length === 1) {
+    nextTick(() => resultsSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }
 }
 
 const copyText = async (text: string, msg: string) => {
@@ -45,7 +50,7 @@ const clearResults = () => {
 
 <template>
   <AppShell>
-    <div class="flex flex-col gap-6">
+    <div class="flex min-h-full flex-col justify-center gap-6 py-2">
       <!-- 上传组件 - 精致卡片 -->
       <div class="glass-card-premium overflow-hidden rounded-3xl p-6 shadow-2xl shadow-blue-500/5 ring-1 ring-white/20 dark:shadow-blue-500/10 dark:ring-white/5">
         <FileUploader
@@ -69,7 +74,7 @@ const clearResults = () => {
         leave-from-class="opacity-100 translate-y-0 scale-100"
         leave-to-class="opacity-0 translate-y-8 scale-95"
       >
-        <div v-if="results.length" class="space-y-6">
+        <div v-if="results.length" ref="resultsSection" class="space-y-6">
           <!-- 批量结果工具栏 -->
           <div class="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl px-5 py-3">
             <p class="text-sm font-semibold text-gray-700 dark:text-gray-200">

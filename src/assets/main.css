@@ -34,6 +34,34 @@
   body {
     @apply bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-50 antialiased;
   }
+  /* 细滚动条：内容区内滚时不出粗滚动条压拽玻璃质感 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(148 163 184 / 0.5) transparent;
+  }
+  .dark * {
+    scrollbar-color: rgb(71 85 105 / 0.6) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background-color: rgb(148 163 184 / 0.5);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(148 163 184 / 0.75);
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background-color: rgb(71 85 105 / 0.6);
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(71 85 105 / 0.85);
+  }
 }
 
 /* --- 自定义极光背景动画 --- */

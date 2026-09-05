@@ -9,9 +9,9 @@ const { theme } = useTheme()
 <template>
   <RouterView />
 
-  <!-- 紧凑玻璃 toast：圆角 + 毛玻璃 + 细描边，与全站玻璃卡片语言一致 -->
+  <!-- 紧凑玻璃 toast：圆角 + 毛玻璃 + 细描边，与全站玻璃卡片语言一致；右下角避免遮挡标题栏 -->
   <Toaster
-    position="top-center"
+    position="bottom-right"
     :theme="theme"
     richColors
     closeButton
