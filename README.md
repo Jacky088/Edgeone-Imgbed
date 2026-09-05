@@ -7,7 +7,7 @@
 
 ## 页面预览
 
-![CNB 图床上传页预览](./screenshot-preview-pc-imgbed.png)
+![CNB 图床上传页预览（日间 / 夜间）](./screenshot-preview-pc-imgbed.png)
 
 ![CNB 图床图片列表预览](./screenshot-preview-admin.png)
 
