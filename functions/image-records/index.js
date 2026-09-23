@@ -154,15 +154,21 @@ export async function onRequest({ request, env }) {
       const active = records.filter((r) => !r.deletedAt)
       const byType = {}
       let totalSize = 0
+      let todayCount = 0
+      const dayStart = new Date()
+      dayStart.setHours(0, 0, 0, 0)
+      const dayStartTs = dayStart.getTime()
       for (const r of active) {
         const ext = (r.type || '').split('/')[1] || 'other'
         byType[ext] = (byType[ext] || 0) + 1
         totalSize += Number(r.size) || 0
+        if (Number(r.createdAt) >= dayStartTs) todayCount++
       }
       return {
         count: active.length,
         totalSize,
         trashed: records.length - active.length,
+        todayCount,
         byType,
       }
     }

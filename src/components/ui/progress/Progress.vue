@@ -23,7 +23,7 @@ const clamped = () => Math.min(100, Math.max(0, props.modelValue ?? 0))
   >
     <div
       data-slot="progress-indicator"
-      class="h-full rounded-full bg-blue-500 transition-all duration-300"
+      class="h-full rounded-full bg-indigo-500 transition-all duration-300"
       :style="{ width: `${clamped()}%` }"
     />
   </div>

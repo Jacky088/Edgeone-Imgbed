@@ -53,17 +53,17 @@ const handleLogin = async () => {
 </script>
 
 <template>
-  <div class="aurora-bg relative flex min-h-screen items-center justify-center px-4 transition-colors duration-300">
+  <div class="app-bg relative flex min-h-screen items-center justify-center px-4 transition-colors duration-300">
     
     <div class="absolute right-6 top-6">
       <ThemeToggle />
     </div>
 
     <div
-      class="glass-card w-full max-w-sm rounded-3xl p-10 text-center"
+      class="card w-full max-w-sm p-10 text-center"
     >
       <div
-        class="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 shadow-sm dark:bg-blue-900/30 dark:text-blue-400"
+        class="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 shadow-sm dark:bg-indigo-900/30 dark:text-indigo-400"
       >
         <LockKeyhole class="h-8 w-8" />
       </div>
@@ -76,7 +76,7 @@ const handleLogin = async () => {
           v-model="password"
           type="password"
           placeholder="请输入口令..."
-          class="w-full h-12 rounded-xl border border-gray-200 bg-white/50 px-4 text-base outline-none transition-all focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-100 dark:focus:bg-gray-800 dark:placeholder-gray-500"
+          class="w-full h-12 rounded-xl border border-gray-200 bg-white/50 px-4 text-base outline-none transition-all focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-100 dark:focus:bg-gray-800 dark:placeholder-gray-500"
           @keyup.enter="handleLogin"
         />
 
@@ -84,7 +84,7 @@ const handleLogin = async () => {
           <input
             v-model="remember"
             type="checkbox"
-            class="h-4 w-4 cursor-pointer accent-blue-600"
+            class="h-4 w-4 cursor-pointer accent-indigo-600"
           />
           记住我 7 天
         </label>
@@ -98,7 +98,7 @@ const handleLogin = async () => {
         </p>
 
         <button
-          class="w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all
+          class="w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-indigo-500/30 transition-all
                  brand-gradient hover:brightness-110
                  hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
           @click="handleLogin"

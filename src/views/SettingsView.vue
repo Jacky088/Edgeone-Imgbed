@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Settings, RotateCcw, Images, Copy, Ruler, FileText, Rows3, Type } from 'lucide-vue-next'
+import { Settings, RotateCcw, Images, Copy, Ruler, FileText, Rows3, Type, Database } from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import AppShell from '@/components/layout/AppShell.vue'
 import { useUploadSettings, PAGE_SIZE_OPTIONS, type CopyFormat, type NamingRule } from '@/composables/useUploadSettings'
@@ -53,14 +53,14 @@ const handleReset = () => {
     <div class="flex flex-col gap-6">
       <div>
         <h2 class="flex items-center gap-2.5 text-2xl font-bold text-gray-900 dark:text-white">
-          <Settings class="h-6 w-6 text-blue-600 dark:text-blue-400" />
+          <Settings class="h-6 w-6 text-indigo-600 dark:text-indigo-400" />
           我的设置
         </h2>
         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">上传压缩与外观偏好（保存在本机浏览器）</p>
       </div>
 
       <!-- 压缩质量 -->
-      <div class="glass-card-premium rounded-3xl p-6">
+      <div class="card p-6">
         <div class="flex flex-col gap-5">
           <div>
             <p class="text-sm font-bold text-gray-900 dark:text-white">图片压缩质量</p>
@@ -76,7 +76,7 @@ const handleReset = () => {
               class="flex min-w-[64px] flex-col items-center rounded-xl px-3 py-2 text-sm font-bold transition-all"
               :class="
                 settings.quality === q.value
-                  ? 'brand-gradient text-white shadow-lg shadow-blue-500/25'
+                  ? 'brand-gradient text-white shadow-lg shadow-indigo-500/25'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
               "
             >
@@ -92,9 +92,9 @@ const handleReset = () => {
       </div>
 
       <!-- 压缩尺寸上限 -->
-      <div class="glass-card-premium rounded-3xl p-6">
+      <div class="card p-6">
         <div class="flex items-start gap-3">
-          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-500 dark:bg-blue-900/30 dark:text-blue-400">
+          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
             <Ruler class="h-5 w-5" />
           </div>
           <div class="min-w-0 flex-1">
@@ -110,7 +110,7 @@ const handleReset = () => {
                 class="rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
                 :class="
                   settings.maxDimension === opt.value
-                    ? 'brand-gradient text-white shadow-md shadow-blue-500/25'
+                    ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                 "
               >
@@ -122,12 +122,12 @@ const handleReset = () => {
       </div>
 
       <!-- 开关组：原图上传 / 缩略图 / 自动复制 -->
-      <div class="glass-card-premium rounded-3xl p-6">
+      <div class="card p-6">
         <div class="flex flex-col divide-y divide-gray-100/70 dark:divide-gray-800/50">
           <!-- 保持原图 -->
           <div class="flex items-center justify-between gap-4 pb-5">
             <div class="flex items-start gap-3">
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-500 dark:bg-blue-900/30 dark:text-blue-400">
+              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
                 <Images class="h-5 w-5" />
               </div>
               <div>
@@ -155,7 +155,7 @@ const handleReset = () => {
           <!-- 缩略图 -->
           <div class="flex items-center justify-between gap-4 py-5">
             <div class="flex items-start gap-3">
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-500 dark:bg-blue-900/30 dark:text-blue-400">
+              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
                 <Images class="h-5 w-5" />
               </div>
               <div>
@@ -183,7 +183,7 @@ const handleReset = () => {
           <!-- 上传后自动复制 -->
           <div class="flex items-center justify-between gap-4 pt-5">
             <div class="flex items-start gap-3">
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-500 dark:bg-blue-900/30 dark:text-blue-400">
+              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
                 <Copy class="h-5 w-5" />
               </div>
               <div>
@@ -211,11 +211,11 @@ const handleReset = () => {
       </div>
 
       <!-- 文件命名规则 + 默认复制格式 -->
-      <div class="glass-card-premium rounded-3xl p-6">
+      <div class="card p-6">
         <div class="grid gap-6 md:grid-cols-2">
           <div>
             <div class="flex items-center gap-2">
-              <Type class="h-4 w-4 text-blue-500" />
+              <Type class="h-4 w-4 text-indigo-500" />
               <p class="text-sm font-bold text-gray-900 dark:text-white">文件命名规则</p>
             </div>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">决定存储在图床里的文件名</p>
@@ -227,7 +227,7 @@ const handleReset = () => {
                 class="flex flex-col items-center rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
                 :class="
                   settings.namingRule === opt.value
-                    ? 'brand-gradient text-white shadow-md shadow-blue-500/25'
+                    ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                 "
               >
@@ -242,7 +242,7 @@ const handleReset = () => {
 
           <div>
             <div class="flex items-center gap-2">
-              <FileText class="h-4 w-4 text-blue-500" />
+              <FileText class="h-4 w-4 text-indigo-500" />
               <p class="text-sm font-bold text-gray-900 dark:text-white">默认复制格式</p>
             </div>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">自动复制与结果卡首推的格式</p>
@@ -254,7 +254,7 @@ const handleReset = () => {
                 class="rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
                 :class="
                   settings.defaultCopyFormat === opt.value
-                    ? 'brand-gradient text-white shadow-md shadow-blue-500/25'
+                    ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                 "
               >
@@ -265,12 +265,50 @@ const handleReset = () => {
         </div>
       </div>
 
-      <!-- 列表每页条数 -->
-      <div class="glass-card-premium rounded-3xl p-6">
-        <!-- 窄窗口时上下堆叠，避免文字被挤压成竖排 -->
+      <!-- 存储配额 -->
+      <div class="card p-6">
         <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div class="flex items-start gap-3">
-            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-500 dark:bg-blue-900/30 dark:text-blue-400">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
+              <Database class="h-5 w-5" />
+            </div>
+            <div class="min-w-0">
+              <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">存储配额</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">侧栏存储卡按此计算占比（GB，仅本机显示用）</p>
+            </div>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <input
+              v-model.number="settings.storageQuotaGB"
+              type="number"
+              min="1"
+              max="100000"
+              step="1"
+              class="h-9 w-24 rounded-xl border border-gray-200 bg-white px-3 text-sm font-bold tabular-nums text-gray-900 outline-none transition-all focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+            />
+            <span class="text-xs font-semibold text-gray-500 dark:text-gray-400">GB</span>
+            <button
+              v-for="n in [10, 50, 100]"
+              :key="n"
+              @click="settings.storageQuotaGB = n"
+              class="h-9 rounded-xl px-3 text-xs font-bold transition-all"
+              :class="
+                settings.storageQuotaGB === n
+                  ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+              "
+            >
+              {{ n }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 列表每页条数 -->
+      <div class="card p-6">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+          <div class="flex items-start gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
               <Rows3 class="h-5 w-5" />
             </div>
             <div class="min-w-0">
@@ -286,7 +324,7 @@ const handleReset = () => {
               class="h-8 w-12 rounded-lg text-xs font-bold transition-all"
               :class="
                 settings.pageSize === n
-                  ? 'brand-gradient text-white shadow-md shadow-blue-500/25'
+                  ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
               "
             >
@@ -297,7 +335,7 @@ const handleReset = () => {
       </div>
 
       <!-- 外观主题 -->
-      <div class="glass-card-premium rounded-3xl p-6">
+      <div class="card p-6">
         <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div class="min-w-0">
             <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">外观主题</p>

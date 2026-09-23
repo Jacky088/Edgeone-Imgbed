@@ -266,6 +266,11 @@ app.post(
   },
 )
 
+// 前端展示用：当前存储桶名（SLUG_IMG 非密钥可返回；仍需登录态，避免未授权探测）
+app.get('/config', rateLimiter(30, 60000), authMiddleware, (_req: any, res: any) => {
+  res.json(reply(0, '获取成功', { bucket: process.env.SLUG_IMG || '' }))
+})
+
 // 未知 /api 路由兜底：统一返回 JSON（code/msg/data 约定），避免 Express 默认 HTML 404
 // 注意：新增路由必须注册在这两个中间件之前，否则会被 404 兜底吞掉
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

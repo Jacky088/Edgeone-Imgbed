@@ -7,15 +7,8 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   /* ... 其他 theme 变量保持默认即可，重点是下面的自定义动画 ... */
-  --animate-aurora: aurora 20s linear infinite;
-  /* [新增] 品牌区漂浮小球动画 */
-  --animate-float: float 4s ease-in-out infinite;
-  /* [增强] 小球更大范围漂移（含水平与旋转） */
-  --animate-drift: drift 5.5s ease-in-out infinite;
-  /* [新增] 云朵整体上下浮动 */
+  /* 侧栏插画云朵轻微上下浮动 */
   --animate-bob: bob 6s ease-in-out infinite;
-  /* [新增] 品牌区流动几何图形 */
-  --animate-geo: geo 12s ease-in-out infinite;
 }
 
 :root {
@@ -66,64 +59,43 @@
   }
 }
 
-/* --- 自定义极光背景动画 --- */
+/* [旧版已下线] 极光背景 / 玻璃拟态残留：模板里已无引用，保留 keyframes 空壳避免第三方引用报错，
+   下个大版本可整段删除（aurora / float / drift / geo / aurora-bg / glass-card / glass-card-premium） */
 @keyframes aurora {
   0% { background-position: 50% 50%, 50% 50%; }
-  33% { background-position: 0% 0%, 100% 100%; }
-  66% { background-position: 100% 0%, 0% 100%; }
   100% { background-position: 50% 50%, 50% 50%; }
 }
-
-/* [新增] 品牌区装饰小球浮动动画 - 更明显的浮动 */
 @keyframes float {
-  0%, 100% { transform: translateY(0) translateX(0) rotate(0deg); }
-  50% { transform: translateY(-26px) translateX(8px) rotate(12deg); }
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-26px); }
 }
-
-/* [增强] 小球横向漂移 + 大范围上下移动 + 透明度呼吸 */
 @keyframes drift {
-  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.65; }
-  25% { transform: translate(14px, -18px) scale(1.1); opacity: 1; }
-  50% { transform: translate(-6px, -36px) scale(0.95); opacity: 0.9; }
-  75% { transform: translate(-16px, -14px) scale(1.05); opacity: 1; }
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-6px, -36px); }
 }
 
-/* [新增] 云朵整体轻微的上下浮动 */
+/* [新增] 云朵整体轻微的上下浮动（侧栏插画用） */
 @keyframes bob {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-8px); }
 }
 
-/* [新增] 流动几何图形：漂移 + 旋转 + 轻微缩放呼吸 */
-@keyframes geo {
-  0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); opacity: 0.75; }
-  25% { transform: translate(18px, -22px) rotate(45deg) scale(1.08); opacity: 1; }
-  50% { transform: translate(-10px, -38px) rotate(120deg) scale(0.94); opacity: 0.7; }
-  75% { transform: translate(-20px, -12px) rotate(200deg) scale(1.05); opacity: 0.95; }
-}
-
-.aurora-bg {
-  background-color: transparent;
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.15) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.15) 0px, transparent 50%),
-    radial-gradient(at 0% 100%, rgba(236, 72, 153, 0.15) 0px, transparent 50%);
-  background-size: 140% 140%;
-  animation: aurora 15s ease infinite alternate;
-}
-
-.dark .aurora-bg {
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(29, 78, 216, 0.15) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, rgba(109, 40, 217, 0.15) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(6, 95, 70, 0.15) 0px, transparent 50%),
-    radial-gradient(at 0% 100%, rgba(190, 24, 93, 0.15) 0px, transparent 50%);
-}
-
 /* 品牌主渐变：Logo、主按钮、分隔线等品牌元素统一使用，避免多种渐变并存 */
 .brand-gradient {
-  @apply bg-gradient-to-br from-blue-500 via-indigo-500 to-violet-600;
+  @apply bg-gradient-to-br from-indigo-500 via-indigo-500 to-violet-600;
+}
+
+/* 新版应用底色：浅灰 + 深色模式深灰（目标图风格） */
+.app-bg {
+  background-color: #f4f5fa;
+}
+.dark .app-bg {
+  background-color: #09090b;
+}
+
+/* 新版通用卡片：白底圆角 + 细边框 + 柔阴影（替代玻璃拟态） */
+.card {
+  @apply rounded-2xl border border-gray-100 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_-12px_rgba(16,24,40,0.12)] dark:border-gray-800 dark:bg-gray-900 dark:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)];
 }
 
 /* [弹窗] 卡片弹入：遮罩淡入的同时卡片轻微上浮缩放，产生层次感 */
@@ -151,29 +123,11 @@
   }
 }
 
-/* 玻璃态卡片基础类 */
-.glass-card {
-  @apply bg-white/70 dark:bg-gray-900/60 backdrop-blur-xl border border-white/20 dark:border-gray-800/50 shadow-xl;
-}
-
-/* 高级玻璃态卡片 - 更精致的质感 */
-.glass-card-premium {
-  @apply bg-white/80 dark:bg-gray-900/70 backdrop-blur-2xl;
-  background-image: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.1) 0%,
-    rgba(255, 255, 255, 0.05) 50%,
-    rgba(255, 255, 255, 0) 100%
-  );
-}
-
+/* [旧版已下线] 玻璃拟态残留：模板里已无引用，保留空壳避免构建告警，下个大版本可整段删除 */
+.glass-card,
+.glass-card-premium,
 .dark .glass-card-premium {
-  background-image: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.05) 0%,
-    rgba(255, 255, 255, 0.02) 50%,
-    rgba(255, 255, 255, 0) 100%
-  );
+  background-image: none;
 }
 
 /* 自定义阴影 */
