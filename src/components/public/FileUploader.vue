@@ -266,6 +266,8 @@ interface UploadInfo {
   thumbnailWidth: number
   thumbnailHeight: number
   thumbnailSize: number
+  /** KV 记录 id：uploadSingle 内生成并写 KV，父组件据此做乐观插入 */
+  recordId: string
 }
 
 interface CompressResult {
@@ -818,6 +820,7 @@ async function uploadSingle(t: UploadTask): Promise<void> {
     }
 
     const thumbnailUrl = data.data.thumbnailUrl || ''
+    const recordId = crypto.randomUUID()
     const uploadInfo: UploadInfo = {
       url: data.data.url,
       urlOriginal: toCnbUrl(data.data?.assets?.path),
@@ -833,13 +836,14 @@ async function uploadSingle(t: UploadTask): Promise<void> {
       thumbnailWidth: t.thumbnailWidth,
       thumbnailHeight: t.thumbnailHeight,
       thumbnailSize: t.thumbnailSize,
+      recordId,
     }
     emit('update:uploadInfo', uploadInfo)
     t.status = 'success'
 
     // 保存上传记录到 KV（同站点接口直接写入）
     const record = {
-      id: crypto.randomUUID(),
+      id: recordId,
       name: t.rawName,
       url: data.data.url,
       thumbnailUrl: thumbnailUrl || undefined,

@@ -16,6 +16,8 @@ export interface UploadResult {
   thumbnailWidth?: number
   thumbnailHeight?: number
   thumbnailSize?: number
+  /** KV 记录 id：FileUploader.uploadSingle 生成，首页据此做最近上传乐观插入（仅上传结果有，列表记录无） */
+  recordId?: string
 }
 
 export type LinkFormatKey = 'url' | 'html' | 'markdown' | 'bbcode'

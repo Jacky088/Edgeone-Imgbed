@@ -60,6 +60,8 @@ interface RecentItem {
   size: number
   type: string
   createdAt: number
+  /** 乐观插入：上传成功瞬间先显示，服务端返回后替换（避免整轮请求延迟） */
+  _optimistic?: boolean
 }
 const stats = ref<HomeStats | null>(null)
 const recent = ref<RecentItem[]>([])
@@ -96,8 +98,8 @@ const statCards = computed(() => [
   },
 ])
 
-const fetchHome = async () => {
-  loadingStats.value = true
+const fetchHome = async (quiet = false) => {
+  if (!quiet) loadingStats.value = true
   fetchBucket()
   try {
     const { data } = await axios.get('/image-records', {
@@ -107,15 +109,18 @@ const fetchHome = async () => {
     if (data.code === 0 && !Array.isArray(data.data)) {
       stats.value = data.data.stats ?? null
       if (stats.value) globalStats.value = stats.value
+      // 乐观插入的行（_optimistic）以服务端返回为准：同 id 替换，其余保留
       const records = (data.data.records ?? []) as RecentItem[]
-      recent.value = [...records]
+      const serverIds = new Set(records.map((r) => r.id))
+      const pending = recent.value.filter((r) => r._optimistic && !serverIds.has(r.id))
+      recent.value = [...pending, ...records]
         .sort((a, b) => b.createdAt - a.createdAt)
         .slice(0, 4)
     }
   } catch {
     // 统计失败不打扰主流程，卡片显示占位
   } finally {
-    loadingStats.value = false
+    if (!quiet) loadingStats.value = false
   }
 }
 
@@ -130,8 +135,25 @@ const handleUploadSuccess = (info: UploadResult) => {
   if (results.value.length === 1) {
     nextTick(() => resultsSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }
-  // 上传成功后静默刷新统计与最近上传，保持四张卡为真数
-  fetchHome()
+  // 乐观插入：上传成功瞬间直接进最近上传（KV 写 + 整轮刷新有延迟，先显示不等待）
+  // recordId 理论上必有（uploadSingle 生成），缺失时回退用 url 做 key
+  recent.value = [
+    {
+      id: info.recordId ?? info.url,
+      name: info.name || '未命名',
+      url: info.url,
+      thumbnailUrl: info.thumbnailUrl,
+      size: info.size ?? 0,
+      type: info.type || 'image/webp',
+      createdAt: Date.now(),
+      _optimistic: true,
+    },
+    ...recent.value,
+  ]
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 4)
+  // 后台静默对账：统计卡 + 侧栏 + 服务端记录为准（同 id 替换乐观行，不闪骨架屏）
+  fetchHome(true)
 }
 
 const handleUploadFinished = async () => {
@@ -292,7 +314,7 @@ const goBatch = () => router.push('/admin')
             <span class="hidden sm:inline">批量操作</span>
           </button>
           <button
-            @click="fetchHome"
+            @click="() => fetchHome()"
             class="flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
             title="刷新"
           >
