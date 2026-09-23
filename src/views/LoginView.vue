@@ -3,7 +3,6 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from '@/utils/axios'
 import { LockKeyhole, TriangleAlert } from 'lucide-vue-next'
-import { Button } from '@/components/ui/button'
 import { toast } from 'vue-sonner'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 
@@ -98,15 +97,15 @@ const handleLogin = async () => {
           <span>将在本设备保留 <b class="font-bold">7 天</b>长效登录凭证，期间无需再次输入口令。公用电脑、共享设备请勿勾选，用完请及时退出登录！</span>
         </p>
 
-        <Button
+        <button
           class="w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all
                  brand-gradient hover:brightness-110
-                 hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm"
+                 hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
           @click="handleLogin"
-          :disabled="loading"
+          :disabled="loading || !password"
         >
           {{ loading ? '验证中...' : '解锁访问' }}
-        </Button>
+        </button>
       </div>
     </div>
   </div>

@@ -27,7 +27,9 @@ import {
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { buildFormats } from '@/utils/formatLinks'
+import { copyTextFallback } from '@/utils/clipboard'
 import { useUploadSettings } from '@/composables/useUploadSettings'
+import { flushPendingRecords } from '@/utils/pendingRecords'
 import AppShell from '@/components/layout/AppShell.vue'
 
 interface ImageRecord {
@@ -139,31 +141,27 @@ const formatDate = (ts: number) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-const fetchList = async () => {
-  loading.value = true
+// 列表与统计一次请求拿全（KV 侧单次全表扫描 + ?stats=1 顺带统计）；quiet 静默刷新，不闪骨架屏
+const fetchList = async (quiet = false) => {
+  if (!quiet) loading.value = true
   try {
     const { data } = await axios.get('/image-records', {
       baseURL: '',
-      params: trashMode.value ? { trash: 1 } : {},
+      params: { ...(trashMode.value ? { trash: 1 } : {}), stats: 1 },
     })
     if (data.code === 0) {
-      list.value = data.data
+      // 兼容旧形状：纯数组（无统计）；新形状：{ records, stats }
+      if (Array.isArray(data.data)) {
+        list.value = data.data
+      } else {
+        list.value = data.data.records ?? []
+        stats.value = data.data.stats ?? null
+      }
     }
   } catch (e) {
-    toast.error('获取列表失败')
+    if (!quiet) toast.error('获取列表失败')
   } finally {
-    loading.value = false
-  }
-}
-
-const fetchStats = async () => {
-  try {
-    const { data } = await axios.get('/image-records/stats', { baseURL: '' })
-    if (data.code === 0) {
-      stats.value = data.data
-    }
-  } catch {
-    // 统计失败不打扰主流程
+    if (!quiet) loading.value = false
   }
 }
 
@@ -267,9 +265,9 @@ const softDelete = async (item: ImageRecord) => {
       params: trashMode.value ? { id: item.id, purge: 1 } : { id: item.id },
     })
     if (data.code === 0) {
-      toast.success(trashMode.value ? '已彻底删除' : '已移入回收站，30 天内可恢复')
       list.value = list.value.filter((row) => row.id !== item.id)
-      fetchStats()
+      toast.success(trashMode.value ? '已彻底删除' : '已移入回收站，30 天内可恢复')
+      fetchList(true)
     } else {
       toast.error(data.msg)
     }
@@ -284,51 +282,55 @@ const softDelete = async (item: ImageRecord) => {
 // 兼容确认弹窗按钮：trashMode 决定软删或彻底删除
 const handleDelete = (item: ImageRecord) => softDelete(item)
 
-const restoreItem = async (item: ImageRecord) => {
+const restoreBatch = async () => {
+  const items = [...selectedList.value]
+  if (items.length === 0) return
   try {
-    const { data } = await axios.put(
-      '/image-records',
-      {},
-      { baseURL: '', params: { id: item.id } },
-    )
+    const { data } = await axios.put(`/image-records?${idsParams(items)}`, {}, { baseURL: '' })
     if (data.code === 0) {
-      toast.success('已恢复到列表')
-      list.value = list.value.filter((row) => row.id !== item.id)
-      fetchStats()
+      const done = new Set(items.map((i) => i.id))
+      list.value = list.value.filter((row) => !done.has(row.id))
+      clearSelection()
+      fetchList(true)
+      toast.success(items.length > 1 ? `已恢复 ${items.length} 条记录` : '已恢复到列表')
     } else {
-      toast.error(data.msg)
+      toast.error(data.msg || '恢复失败')
     }
   } catch {
     toast.error('恢复失败')
   }
 }
 
-const restoreBatch = async () => {
-  const items = selectedList.value
-  if (items.length === 0) return
-  let ok = 0
-  for (const item of items) {
-    try {
-      const { data } = await axios.put('/image-records', {}, { baseURL: '', params: { id: item.id } })
-      if (data.code === 0) {
-        list.value = list.value.filter((row) => row.id !== item.id)
-        ok++
-      }
-    } catch {
-      // 计入失败
+// 查询串组装 ?id=a&id=b（与 KV 侧 getAll('id') 批量路径配套）
+const idsParams = (items: ImageRecord[]) => items.map((i) => `id=${encodeURIComponent(i.id)}`).join('&')
+
+const restoreOne = async (item: ImageRecord): Promise<boolean> => {
+  try {
+    const { data } = await axios.put('/image-records', {}, { baseURL: '', params: { id: item.id } })
+    if (data.code === 0) {
+      list.value = list.value.filter((row) => row.id !== item.id)
+      return true
     }
+  } catch {
+    // 计入失败
   }
-  clearSelection()
-  fetchStats()
-  toast.success(`已恢复 ${ok} 条记录`)
+  return false
+}
+
+const restoreItem = async (item: ImageRecord) => {
+  const ok = await restoreOne(item)
+  if (ok) {
+    toast.success('已恢复到列表')
+    fetchList(true)
+  } else {
+    toast.error('恢复失败')
+  }
 }
 
 const copyText = async (text: string, msg: string) => {
-  try {
-    await navigator.clipboard.writeText(text)
+  if (await copyTextFallback(text)) {
     toast.success(msg)
-  } catch (err) {
-    console.error(err)
+  } else {
     toast.error('复制失败，请尝试手动选中复制')
   }
 }
@@ -391,32 +393,30 @@ const askBatchDelete = () => {
 const handleBatchDelete = async () => {
   if (batchDeleting.value || selectedList.value.length === 0) return
   batchDeleting.value = true
-  let ok = 0
-  let fail = 0
-  for (const item of selectedList.value) {
-    try {
-      const { data } = await axios.delete('/image-records', {
-        baseURL: '',
-        params: trashMode.value ? { id: item.id, purge: 1 } : { id: item.id },
-      })
-      if (data.code === 0) {
-        list.value = list.value.filter((row) => row.id !== item.id)
-        ok++
+  const snapshot = [...selectedList.value]
+  const purgeSuffix = trashMode.value ? '&purge=1' : ''
+  try {
+    const { data } = await axios.delete(`/image-records?${idsParams(snapshot)}${purgeSuffix}`, { baseURL: '' })
+    if (data.code === 0) {
+      const done = new Set(snapshot.map((i) => i.id))
+      list.value = list.value.filter((row) => !done.has(row.id))
+      clearSelection()
+      fetchList(true)
+      const ok = data.data?.ok ?? snapshot.length
+      const fail = data.data?.fail ?? 0
+      if (fail === 0) {
+        toast.success(trashMode.value ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`)
       } else {
-        fail++
+        toast.warning(`${ok} 条删除成功，${fail} 条失败`)
       }
-    } catch {
-      fail++
+    } else {
+      toast.error(data.msg || '删除失败')
     }
-  }
-  batchDeleting.value = false
-  pendingBatchDelete.value = false
-  clearSelection()
-  fetchStats()
-  if (fail === 0) {
-    toast.success(trashMode.value ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`)
-  } else {
-    toast.warning(`${ok} 条删除成功，${fail} 条失败`)
+  } catch {
+    toast.error('删除失败')
+  } finally {
+    batchDeleting.value = false
+    pendingBatchDelete.value = false
   }
 }
 
@@ -434,11 +434,15 @@ const exportRecords = (scope: 'all' | 'selected') => {
     createdAt,
   }))
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const objectUrl = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
+  a.href = objectUrl
   a.download = `imgbed-records-${new Date().toISOString().slice(0, 10)}.json`
+  // Safari 要求 <a> 在文档内 click 才触发下载；revoke 延迟到下载开始后，避免竞态
+  document.body.appendChild(a)
   a.click()
-  URL.revokeObjectURL(a.href)
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
   toast.success(`已导出 ${items.length} 条记录`)
 }
 
@@ -451,9 +455,18 @@ const copyFormat = (item: ImageRecord, key: 'url' | 'markdown' | 'html' | 'bbcod
 // 快捷键帮助卡片
 const showShortcuts = ref(false)
 
-onMounted(() => {
-  fetchList()
-  fetchStats()
+onMounted(async () => {
+  await fetchList()
+  // 上传成功但 KV 写记录失败的孤儿记录：静默补写，成功则刷新列表
+  try {
+    const flushed = await flushPendingRecords()
+    if (flushed > 0) {
+      toast.success(`已补写 ${flushed} 条之前保存失败的记录`)
+      fetchList(true)
+    }
+  } catch {
+    // 补写失败不打扰主流程（队列保留，下次再试）
+  }
   window.addEventListener('keydown', onKeydown)
 })
 

@@ -6,6 +6,7 @@ import { ref, nextTick } from 'vue'
 import { toast } from 'vue-sonner'
 import { Link2, Braces, Code2, Hash, Trash2 } from 'lucide-vue-next'
 import { buildFormats, type UploadResult, type LinkFormatKey } from '@/utils/formatLinks'
+import { copyTextFallback } from '@/utils/clipboard'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 
 // 上传压缩参数：从设置页读取（localStorage 持久化），仍是原 WebP 压缩管线
@@ -32,21 +33,18 @@ const handleUploadFinished = async () => {
     .filter(Boolean)
     .join('\n')
   if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    const label = { url: '链接', markdown: 'Markdown', html: 'HTML', bbcode: 'BBCode' }[key]
+  const label = { url: '链接', markdown: 'Markdown', html: 'HTML', bbcode: 'BBCode' }[key]
+  if (await copyTextFallback(text)) {
     toast.success(`已自动复制 ${results.value.length} 条${label}`)
-  } catch {
+  } else {
     toast.info('自动复制失败，请手动复制')
   }
 }
 
 const copyText = async (text: string, msg: string) => {
-  try {
-    await navigator.clipboard.writeText(text)
+  if (await copyTextFallback(text)) {
     toast.success(msg)
-  } catch (err) {
-    console.error(err)
+  } else {
     toast.error('复制失败，请尝试手动选中复制')
   }
 }
@@ -72,11 +70,12 @@ const clearResults = () => {
     <div class="flex min-h-full flex-col justify-center gap-6 py-2">
       <!-- 上传组件 - 精致卡片 -->
       <div class="glass-card-premium overflow-hidden rounded-3xl p-6 shadow-2xl shadow-blue-500/5 ring-1 ring-white/20 dark:shadow-blue-500/10 dark:ring-white/5">
+        <!-- maxDimension 为长边上限：宽高传同一个值形成正方形包络盒，等价于"长边 ≤ 上限"；0 表示不限制 -->
         <FileUploader
           @update:uploadInfo="handleUploadSuccess"
           @upload:finished="handleUploadFinished"
-          :maxHeight="5000"
-          :maxWidth="5000"
+          :maxHeight="settings.maxDimension"
+          :maxWidth="settings.maxDimension"
           :quality="settings.quality"
           :generateThumbnail="settings.generateThumbnail"
           :thumbnailMaxWidth="400"

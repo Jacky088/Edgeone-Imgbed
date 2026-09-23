@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { isTokenLive } from '@/utils/authToken'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -35,9 +36,16 @@ const router = createRouter({
 
 // [新增] 全局前置守卫
 router.beforeEach((to, from, next) => {
-  // 1. 检查是否有 token：sessionStorage 优先，其次 localStorage（"记住我"7 天）
-  const isAuthenticated =
-    sessionStorage.getItem('site_access_token') || localStorage.getItem('site_access_token')
+  // 同步双存储：localStorage（"记住我"）的 token 也镜像一份到 sessionStorage，
+  // axios 拦截器只读 sessionStorage，避免两边不一致
+  const remembered = localStorage.getItem('site_access_token')
+  if (remembered && !sessionStorage.getItem('site_access_token')) {
+    sessionStorage.setItem('site_access_token', remembered)
+  }
+
+  // 1. 检查是否有 token，并预判是否过期（过期 token 视为未登录，直接拦去登录页）
+  const token = sessionStorage.getItem('site_access_token') || remembered
+  const isAuthenticated = !!token && isTokenLive(token)
 
   // 2. 如果要去的是登录页，且已经登录，直接去首页
   if (to.name === 'login' && isAuthenticated) {

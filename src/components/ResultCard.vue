@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import QRCode from 'qrcode'
+// qrcode 体积较大，改为 toggleQr 内动态 import，首屏主包不再包含
 import { buildFormats, type UploadResult, type LinkFormatKey } from '@/utils/formatLinks'
+import { copyTextFallback } from '@/utils/clipboard'
 import { Link2, Code2, Braces, Hash, Copy, Check, ChevronDown, Image as ImageIcon, Server, QrCode } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
@@ -33,16 +34,14 @@ const formatIcons: Record<LinkFormatKey, any> = {
 }
 
 const copyToClipboard = async (key: LinkFormatKey, text: string) => {
-  try {
-    await navigator.clipboard.writeText(text)
+  if (await copyTextFallback(text)) {
     justCopied.value = key
     toast.success('已复制到剪贴板')
     if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => {
       justCopied.value = null
     }, 1500)
-  } catch (err) {
-    console.error(err)
+  } else {
     toast.error('复制失败，请尝试手动选中复制')
   }
 }
@@ -69,6 +68,7 @@ const toggleQr = async () => {
     return
   }
   try {
+    const { default: QRCode } = await import('qrcode')
     qrDataUrl.value = await QRCode.toDataURL(props.info.url, {
       width: 220,
       margin: 2,

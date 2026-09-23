@@ -133,19 +133,19 @@ async function uploadToCnb({
 }
 
 /**
- * 创建代理处理函数
- * @param {string} baseUrl 基础URL
- * @param {object} requestConfig 请求配置
- * @returns 路由处理函数
+ * 图片代理处理函数（模块级单例：无请求级闭包，每次调用复用同一函数）
  */
-function createProxyHandler(
+const ALLOWED_PROXY_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp)$/i
+
+async function proxyImageRequest(
   baseUrl: string,
   requestConfig: { headers?: Record<string, string>; timeout?: number },
+  req: any,
+  res: any,
 ) {
-  return async (req: any, res: any) => {
-    try {
-      // EdgeOne Maker 环境兼容：尝试多种方式获取路径
-      let urlPath = ''
+  try {
+    // EdgeOne Maker 环境兼容：尝试多种方式获取路径
+    let urlPath = ''
 
       // 方式1: 从 params.path 获取（标准 Express）
       if (req.params.path) {
@@ -169,8 +169,7 @@ function createProxyHandler(
 
       // 额外验证：只允许与上传白名单一致的图片扩展名
       // （SVG 可内嵌脚本存在 XSS 风险，bmp/ico 上传侧本就不允许，均不放行）
-      const allowedExtensions = /\.(jpg|jpeg|png|gif|webp)$/i
-      if (!allowedExtensions.test(urlPath)) {
+      if (!ALLOWED_PROXY_EXTENSIONS.test(urlPath)) {
         console.error('❌ [Proxy] Forbidden file type:', urlPath)
         return res.status(403).json({ error: 'Forbidden file type' })
       }
@@ -190,14 +189,46 @@ function createProxyHandler(
         const contentType = response.headers.get('content-type') || 'image/png'
         // 上游返回非图片内容时拒绝，防止将 HTML/脚本作为图片代理输出
         if (!contentType.startsWith('image/')) {
+          // 上游 body 必须消费掉，否则底层连接无法复用（keep-alive 泄漏）
+          await response.arrayBuffer().catch(() => {})
           console.error(`❌ [Proxy] Unexpected content-type: ${contentType}`)
           return res.status(502).json({ error: 'Upstream returned non-image content' })
         }
-        const arrayBuffer = await response.arrayBuffer()
+        const contentLength = response.headers.get('content-length')
+        // 代理上限 20MB：超限直接 413，避免 arrayBuffer 全量进内存拖垮实例
+        if (contentLength && Number(contentLength) > 20 * 1024 * 1024) {
+          await response.arrayBuffer().catch(() => {})
+          return res.status(413).json({ error: 'Image too large to proxy' })
+        }
 
         res.setHeader('Content-Type', contentType)
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
-        res.send(Buffer.from(arrayBuffer))
+        // 流式转发：边下边吐，不在内存里攒完整文件（内存占用从 O(文件) 降到 O(分片)）
+        if (response.body) {
+          const reader = response.body.getReader()
+          try {
+            for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              if (!res.write(value)) {
+                await new Promise<void>((resolve) => res.once('drain', resolve))
+              }
+            }
+            res.end()
+          } catch {
+            reader.cancel().catch(() => {})
+            if (!res.headersSent) {
+              return res.status(502).json({ error: 'Failed to stream from upstream' })
+            }
+            res.end()
+          } finally {
+            reader.releaseLock()
+          }
+        } else {
+          // 极少数环境无 body 流，回退到旧的全量转发
+          const arrayBuffer = await response.arrayBuffer()
+          res.send(Buffer.from(arrayBuffer))
+        }
       } else {
         console.error(`❌ [Proxy] Upstream error: ${response.status} ${response.statusText}`)
         res.status(response.status).json({
@@ -215,7 +246,6 @@ function createProxyHandler(
       }
       return res.status(500).json({ error: 'Internal server error' })
     }
-  }
 }
 
 /**
@@ -230,4 +260,4 @@ function extractImagePath(url: string): string {
   return url
 }
 
-export { uploadToCnb, createProxyHandler, signAuthToken, verifyAuthToken, detectImageMime, securePasswordCompare, extractImagePath }
+export { proxyImageRequest as createProxyHandler, uploadToCnb, signAuthToken, verifyAuthToken, detectImageMime, securePasswordCompare, extractImagePath }

@@ -126,10 +126,10 @@
         <span class="min-w-0 truncate">正在上传 {{ uploadIndex }}/{{ tasks.length }}：{{ uploadTask.rawName }}</span>
         <span class="shrink-0">{{ uploadTask.progress }}%</span>
       </div>
-      <Progress :model-value="uploadTask.progress" class="h-4 rounded-full bg-gray-200 dark:bg-gray-700" />
+      <Progress :model-value="uploadTask.progress" class="h-4" />
     </div>
 
-    <Button
+    <button
       class="mt-6 w-full h-12 rounded-xl text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all
              brand-gradient hover:brightness-110
              hover:-translate-y-0.5 active:translate-y-0 active:shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
@@ -137,7 +137,7 @@
       @click="startUpload"
     >
       {{ uploading ? '正在飞速上传...' : tasks.length > 1 ? `开始上传（${tasks.length} 张）` : '开始上传图片' }}
-    </Button>
+    </button>
 
     <p v-if="errorMsg" class="mt-4 text-center text-sm font-medium text-red-500 animate-shake">
       {{ errorMsg }}
@@ -168,8 +168,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import axios from '@/utils/axios'
 import type { AxiosProgressEvent } from 'axios'
-import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
+import { enqueuePendingRecord } from '@/utils/pendingRecords'
 import { toast } from 'vue-sonner'
 import { UploadCloud, XCircle, Loader2, FileImage, CheckCircle2 } from 'lucide-vue-next'
 import { useUploadSettings } from '@/composables/useUploadSettings'
@@ -310,7 +310,6 @@ const canUpload = computed(
 // 按命名规则生成存储文件名（保留原扩展名）
 function buildStoredName(originalName: string): string {
   const ext = (originalName.match(/\.\w+$/)?.[0] || '').toLowerCase()
-  const base = originalName.replace(/\.\w+$/, '')
   if (settings.value.namingRule === 'timestamp') {
     const d = new Date()
     const pad = (n: number) => String(n).padStart(2, '0')
@@ -340,125 +339,94 @@ async function compressImageToWebp(
   maxWidth: number = 0,
   maxHeight: number = 0,
 ): Promise<CompressResult> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.readAsDataURL(file)
-    reader.onload = (e: ProgressEvent<FileReader>) => {
-      const img = new Image()
-      img.src = e.target?.result as string
-      img.onload = () => {
-        const canvas = document.createElement('canvas')
-        const ctx = canvas.getContext('2d')
+  // 一次解码复用：decode（File → ImageBitmap）只做一次，后续 toBlob 直接用
+  const bitmap = await createImageBitmap(file).catch(() => null)
+  if (!bitmap) throw new Error('图片加载失败')
 
-        if (!ctx) {
-          reject(new Error('无法获取 canvas context'))
-          return
-        }
+  try {
+    let width = bitmap.width
+    let height = bitmap.height
 
-        let width = img.width
-        let height = img.height
-
-        if (maxWidth > 0 || maxHeight > 0) {
-          if (maxWidth > 0 && maxHeight > 0) {
-            const ratio = Math.min(maxWidth / width, maxHeight / height)
-            if (ratio < 1) {
-              width = Math.round(width * ratio)
-              height = Math.round(height * ratio)
-            }
-          } else if (maxWidth > 0 && width > maxWidth) {
-            const ratio = maxWidth / width
-            width = maxWidth
-            height = Math.round(height * ratio)
-          } else if (maxHeight > 0 && height > maxHeight) {
-            const ratio = maxHeight / height
-            height = maxHeight
-            width = Math.round(width * ratio)
-          }
-        }
-
-        canvas.width = width
-        canvas.height = height
-        ctx.drawImage(img, 0, 0, width, height)
-
-        canvas.toBlob(
-          (blob) => {
-            if (blob) {
-              const compressedFile = new File([blob], file.name.replace(/\.\w+$/, '.webp'), {
-                type: 'image/webp',
-              })
-              resolve({
-                compressedFile,
-                width,
-                height,
-              })
-            } else {
-              reject(new Error('WebP 转换失败'))
-            }
-          },
-          'image/webp',
-          quality,
-        )
-      }
-      img.onerror = () => reject(new Error('图片加载失败'))
-    }
-    reader.onerror = () => reject(new Error('文件读取失败'))
-  })
-}
-
-async function generateThumbnailImage(file: File): Promise<ThumbnailResult> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.readAsDataURL(file)
-    reader.onload = (e: ProgressEvent<FileReader>) => {
-      const img = new Image()
-      img.src = e.target?.result as string
-      img.onload = () => {
-        const canvas = document.createElement('canvas')
-        const ctx = canvas.getContext('2d')
-
-        if (!ctx) {
-          reject(new Error('无法获取 canvas context'))
-          return
-        }
-
-        let width = img.width
-        let height = img.height
-        const maxWidth = props.thumbnailMaxWidth
-        const maxHeight = props.thumbnailMaxHeight
-
-        if (width > maxWidth || height > maxHeight) {
-          const ratio = Math.min(maxWidth / width, maxHeight / height)
+    if (maxWidth > 0 || maxHeight > 0) {
+      if (maxWidth > 0 && maxHeight > 0) {
+        const ratio = Math.min(maxWidth / width, maxHeight / height)
+        if (ratio < 1) {
           width = Math.round(width * ratio)
           height = Math.round(height * ratio)
         }
-
-        canvas.width = width
-        canvas.height = height
-        ctx.drawImage(img, 0, 0, width, height)
-
-        canvas.toBlob(
-          (blob) => {
-            if (blob) {
-              const thumbnailFile = new File([blob], file.name.replace(/\.\w+$/, '_thumb.webp'), {
-                type: 'image/webp',
-              })
-              resolve({
-                thumbnailFile,
-                width,
-                height,
-                size: blob.size,
-              })
-            } else {
-              reject(new Error('缩略图生成失败'))
-            }
-          },
-          'image/webp',
-          props.thumbnailQuality,
-        )
+      } else if (maxWidth > 0 && width > maxWidth) {
+        const ratio = maxWidth / width
+        width = maxWidth
+        height = Math.round(height * ratio)
+      } else if (maxHeight > 0 && height > maxHeight) {
+        const ratio = maxHeight / height
+        height = maxHeight
+        width = Math.round(width * ratio)
       }
-      img.onerror = () => reject(new Error('图片加载失败'))
     }
-    reader.onerror = () => reject(new Error('文件读取失败'))
+
+    const blob = await canvasToWebp(bitmap, width, height, quality, 'WebP 转换失败')
+    const compressedFile = new File([blob], file.name.replace(/\.\w+$/, '.webp'), {
+      type: 'image/webp',
+    })
+    return { compressedFile, width, height }
+  } finally {
+    bitmap.close()
+  }
+}
+
+async function generateThumbnailImage(file: File): Promise<ThumbnailResult> {
+  const bitmap = await createImageBitmap(file).catch(() => null)
+  if (!bitmap) throw new Error('图片加载失败')
+
+  try {
+    let width = bitmap.width
+    let height = bitmap.height
+    const maxWidth = props.thumbnailMaxWidth
+    const maxHeight = props.thumbnailMaxHeight
+
+    if (width > maxWidth || height > maxHeight) {
+      const ratio = Math.min(maxWidth / width, maxHeight / height)
+      width = Math.round(width * ratio)
+      height = Math.round(height * ratio)
+    }
+
+    const blob = await canvasToWebp(bitmap, width, height, props.thumbnailQuality, '缩略图生成失败')
+    const thumbnailFile = new File([blob], file.name.replace(/\.\w+$/, '_thumb.webp'), {
+      type: 'image/webp',
+    })
+    return { thumbnailFile, width, height, size: blob.size }
+  } finally {
+    bitmap.close()
+  }
+}
+
+// ImageBitmap → canvas 缩放 → WebP blob（压缩与缩略图的公共绘制管线）
+function canvasToWebp(
+  source: ImageBitmap,
+  width: number,
+  height: number,
+  quality: number,
+  errorMsg: string,
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      reject(new Error('无法获取 canvas context'))
+      return
+    }
+    canvas.width = width
+    canvas.height = height
+    ctx.drawImage(source, 0, 0, width, height)
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob)
+        else reject(new Error(errorMsg))
+      },
+      'image/webp',
+      quality,
+    )
   })
 }
 
@@ -472,11 +440,50 @@ function onFileChange(e: Event): void {
   target.value = ''
 }
 
-function onDrop(e: DragEvent): void {
+async function onDrop(e: DragEvent): Promise<void> {
   isDragging.value = false
-  const list = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : []
+  const list = await resolveDroppedFiles(e.dataTransfer)
   if (list.length > 0) {
     handleFiles(list)
+  }
+}
+
+// 单张压缩管线：批量主流程与失败重试共用，保证 GIF/原图直传判断一致
+async function processTaskFile(t: UploadTask): Promise<void> {
+  // GIF 始终跳过压缩以保留动画；开启"保持原图"时全部跳过
+  const skipCompress =
+    t.rawFile.type === 'image/gif' || settings.value.keepOriginal
+
+  if (skipCompress) {
+    // 原图直传：按命名规则重命名，尺寸直接读取
+    const storedName = buildStoredName(t.rawName)
+    t.file = new File([t.rawFile], storedName, { type: t.rawFile.type })
+    const dim = await readImageSize(t.rawFile)
+    t.width = dim.width
+    t.height = dim.height
+    t.compressionRatio = 0
+  } else {
+    const { compressedFile, width, height } = await compressImageToWebp(
+      t.rawFile,
+      props.quality,
+      props.maxWidth,
+      props.maxHeight,
+    )
+    t.compressionRatio = ((t.rawSize - compressedFile.size) / t.rawSize) * 100
+    // 压缩后按命名规则重命名（保留 .webp 扩展名）
+    t.file = new File([compressedFile], buildStoredName(compressedFile.name), {
+      type: 'image/webp',
+    })
+    t.width = width
+    t.height = height
+  }
+
+  if (props.generateThumbnail) {
+    const thumbnail = await generateThumbnailImage(t.file)
+    t.thumbnailFile = thumbnail.thumbnailFile
+    t.thumbnailWidth = thumbnail.width
+    t.thumbnailHeight = thumbnail.height
+    t.thumbnailSize = thumbnail.size
   }
 }
 
@@ -558,41 +565,7 @@ async function handleFiles(list: File[]): Promise<void> {
     processingIndex.value = i + 1
     t.status = 'processing'
     try {
-      // GIF 始终跳过压缩以保留动画；开启"保持原图"时全部跳过
-      const skipCompress =
-        t.rawFile.type === 'image/gif' || settings.value.keepOriginal
-
-      if (skipCompress) {
-        // 原图直传：按命名规则重命名，尺寸直接读取
-        const storedName = buildStoredName(t.rawName)
-        t.file = new File([t.rawFile], storedName, { type: t.rawFile.type })
-        const dim = await readImageSize(t.rawFile)
-        t.width = dim.width
-        t.height = dim.height
-        t.compressionRatio = 0
-      } else {
-        const { compressedFile, width, height } = await compressImageToWebp(
-          t.rawFile,
-          props.quality,
-          props.maxWidth,
-          props.maxHeight,
-        )
-        t.compressionRatio = ((t.rawSize - compressedFile.size) / t.rawSize) * 100
-        // 压缩后按命名规则重命名（保留 .webp 扩展名）
-        t.file = new File([compressedFile], buildStoredName(compressedFile.name), {
-          type: 'image/webp',
-        })
-        t.width = width
-        t.height = height
-      }
-
-      if (props.generateThumbnail) {
-        const thumbnail = await generateThumbnailImage(t.file)
-        t.thumbnailFile = thumbnail.thumbnailFile
-        t.thumbnailWidth = thumbnail.width
-        t.thumbnailHeight = thumbnail.height
-        t.thumbnailSize = thumbnail.size
-      }
+      await processTaskFile(t)
       t.status = 'ready'
     } catch (err) {
       console.error('图片处理失败:', err)
@@ -603,18 +576,12 @@ async function handleFiles(list: File[]): Promise<void> {
 }
 
 // 读取图片原始尺寸（原图直传时 canvas 压缩管线被跳过）
-function readImageSize(file: File): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.readAsDataURL(file)
-    reader.onload = (e: ProgressEvent<FileReader>) => {
-      const img = new Image()
-      img.src = e.target?.result as string
-      img.onload = () => resolve({ width: img.width, height: img.height })
-      img.onerror = () => reject(new Error('图片加载失败'))
-    }
-    reader.onerror = () => reject(new Error('文件读取失败'))
-  })
+async function readImageSize(file: File): Promise<{ width: number; height: number }> {
+  const bitmap = await createImageBitmap(file).catch(() => null)
+  if (!bitmap) throw new Error('图片加载失败')
+  const size = { width: bitmap.width, height: bitmap.height }
+  bitmap.close()
+  return size
 }
 
 // 释放任务预览的 objectURL，避免内存泄漏
@@ -636,7 +603,16 @@ function clearAll(): void {
 // 截图后 Ctrl+V 直接粘贴上传；剪贴板没有文件时不拦截默认行为
 function onPaste(e: ClipboardEvent): void {
   if (uploading.value) return
-  const files = Array.from(e.clipboardData?.files || [])
+  const dt = e.clipboardData
+  if (!dt) return
+  // files 为空时（如从网页复制图片）再扫 items 里 type 为 image/* 的条目
+  let files = Array.from(dt.files || [])
+  if (files.length === 0 && dt.items) {
+    files = Array.from(dt.items)
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => !!f)
+  }
   if (files.length > 0) {
     e.preventDefault()
     // 粘贴的截图名字无意义（image.png 等），自动改成可读的 screenshot-时间戳
@@ -667,14 +643,14 @@ function onWindowDragLeave(e: DragEvent): void {
   if (dragDepth === 0) windowDragging.value = false
 }
 
-function onWindowDrop(e: DragEvent): void {
+async function onWindowDrop(e: DragEvent): Promise<void> {
   if (dragDepth === 0) return
   e.preventDefault()
   dragDepth = 0
   windowDragging.value = false
   isDragging.value = false
   if (uploading.value) return
-  const list = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : []
+  const list = await resolveDroppedFiles(e.dataTransfer)
   if (list.length > 0) {
     handleFiles(list)
   }
@@ -717,6 +693,17 @@ async function collectFilesFromEntries(items: DataTransferItemList): Promise<Fil
   }
   for (const entry of entries) await walk(entry)
   return files
+}
+
+// 拖拽入口统一解析：优先走 webkitGetAsEntry 递归（含文件夹拖入），
+// 拿不到 entries（非 Chromium / 非文件来源）时回退到 dataTransfer.files
+async function resolveDroppedFiles(dt: DataTransfer | null | undefined): Promise<File[]> {
+  if (!dt) return []
+  if (dt.items && dt.items.length > 0) {
+    const fromEntries = await collectFilesFromEntries(dt.items)
+    if (fromEntries.length > 0) return fromEntries
+  }
+  return dt.files ? Array.from(dt.files) : []
 }
 
 onMounted(() => {
@@ -783,23 +770,22 @@ async function uploadSingle(t: UploadTask): Promise<void> {
     t.status = 'success'
 
     // 保存上传记录到 KV（同站点接口直接写入）
+    const record = {
+      id: crypto.randomUUID(),
+      name: t.rawName,
+      url: data.data.url,
+      thumbnailUrl: thumbnailUrl || undefined,
+      size: t.file.size,
+      type: t.file.type,
+      createdAt: Date.now(),
+    }
     try {
-      await axios.post(
-        '/image-records',
-        {
-          id: crypto.randomUUID(),
-          name: t.rawName,
-          url: data.data.url,
-          thumbnailUrl: thumbnailUrl || undefined,
-          size: t.file.size,
-          type: t.file.type,
-          createdAt: Date.now(),
-        },
-        { baseURL: '' },
-      )
+      await axios.post('/image-records', record, { baseURL: '' })
     } catch (recordError) {
       console.error('保存上传记录失败:', recordError)
-      toast.warning(`「${t.rawName}」已上传，但链接记录保存失败`)
+      // CNB 已有文件但 KV 无记录 = 孤儿文件：入本地待补写队列，下次打开管理页自动重试
+      enqueuePendingRecord(record)
+      toast.warning(`「${t.rawName}」已上传，但链接记录保存失败，稍后打开图片列表时会自动补写`)
     }
   } catch (err) {
     console.error(err)
@@ -815,25 +801,9 @@ async function retryTask(t: UploadTask): Promise<void> {
   if (uploading.value || t.status !== 'error') return
   try {
     if (!t.file) {
+      // 压缩未完成的先补压缩：走与主流程同一管线（GIF/原图直传判断一致）
       t.status = 'processing'
-      const { compressedFile, width, height } = await compressImageToWebp(
-        t.rawFile,
-        props.quality,
-        props.maxWidth,
-        props.maxHeight,
-      )
-      t.compressionRatio = ((t.rawSize - compressedFile.size) / t.rawSize) * 100
-      t.file = compressedFile
-      t.width = width
-      t.height = height
-
-      if (props.generateThumbnail) {
-        const thumbnail = await generateThumbnailImage(compressedFile)
-        t.thumbnailFile = thumbnail.thumbnailFile
-        t.thumbnailWidth = thumbnail.width
-        t.thumbnailHeight = thumbnail.height
-        t.thumbnailSize = thumbnail.size
-      }
+      await processTaskFile(t)
     }
     errorMsg.value = ''
     await uploadSingle(t)

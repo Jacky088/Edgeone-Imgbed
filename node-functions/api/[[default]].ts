@@ -29,7 +29,6 @@ const upload = multer({
 const app = express()
 
 const requestConfig = {
-  responseType: 'arraybuffer',
   timeout: 5000,
   headers: {
     Accept: 'image/*, */*',
@@ -37,6 +36,16 @@ const requestConfig = {
   },
 }
 const BASE_URL = 'https://cnb.cool/' + process.env.SLUG_IMG + '/-/imgs/'
+
+// 启动时校验关键环境变量：缺失时打清晰日志（不打印密钥本身），避免上传时报含糊错误
+for (const key of ['SLUG_IMG', 'TOKEN_IMG']) {
+  if (!process.env[key]) {
+    console.error(`[Config] 缺少环境变量 ${key}：图片上传/代理将不可用，请在 EdgeOne 控制台补齐后重新部署`)
+  }
+}
+if (!process.env.BASE_IMG_URL) {
+  console.error('[Config] 缺少环境变量 BASE_IMG_URL：上传返回的链接域名将为空，请补齐后重新部署')
+}
 
 // 解析 JSON body
 app.use(express.json({ limit: '1mb' })) // 限制 JSON body 大小
@@ -48,10 +57,9 @@ app.use(securityHeaders)
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`)
 
-  // 如果是图片代理请求，直接处理
+  // 如果是图片代理请求，直接处理（createProxyHandler 为模块级单例，无请求级闭包）
   if (req.url && req.url.startsWith('/img/')) {
-    const handler = createProxyHandler(BASE_URL, requestConfig)
-    return handler(req, res)
+    return createProxyHandler(BASE_URL, requestConfig, req, res)
   }
 
   next()
@@ -183,9 +191,8 @@ app.post(
   },
 )
 
-export default app
-
 // PicGo 等第三方工具上传：使用长效 API Token 走 Basic Auth
+// （export default app 移至文件末尾：所有路由注册完成后再导出）
 // 配置方式：PicGo 自定义 WebUploader，POST multipart 字段 file 到 {域名}/api/upload/img
 // Authorization: Basic base64(api:<PICGO_TOKEN>)，PICGO_TOKEN 为环境变量
 app.post(
@@ -258,3 +265,28 @@ app.post(
     }
   },
 )
+
+// 未知 /api 路由兜底：统一返回 JSON（code/msg/data 约定），避免 Express 默认 HTML 404
+// 注意：新增路由必须注册在这两个中间件之前，否则会被 404 兜底吞掉
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+app.use((_req: any, res: any) => {
+  res.status(404).json(reply(1, '接口不存在', null))
+})
+
+// 上传错误统一 JSON 处理：multer 限流/类型拒绝默认会走 Express HTML 错误页
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+app.use((err: any, _req: any, res: any, _next: (_e: unknown) => void) => {
+  console.error('API 错误:', err?.message || err)
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json(reply(1, '文件超过 5MB 上限', null))
+    }
+    return res.status(400).json(reply(1, '文件上传失败', null))
+  }
+  if (err?.message === '只允许上传图片文件') {
+    return res.status(400).json(reply(1, '只允许上传图片文件', null))
+  }
+  res.status(500).json(reply(1, '上传失败，请稍后重试', null))
+})
+
+export default app
