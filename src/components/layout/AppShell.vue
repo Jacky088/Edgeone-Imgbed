@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import {
   CloudUpload,
   GalleryVertical,
@@ -10,15 +10,26 @@ import {
   Cloud,
   Github,
   Archive,
+  Link2,
+  Database,
 } from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import BucketBadge from '@/components/BucketBadge.vue'
 import { useUploadSettings } from '@/composables/useUploadSettings'
+import { useGlobalStats } from '@/composables/useGlobalStats'
+import { useBucket } from '@/composables/useBucket'
 import { formatCompactSize } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
 const { settings } = useUploadSettings()
+// 全站统计与桶名由 AppShell 统一拉取：所有页面侧栏/顶栏一致，无需各页面传入
+const { stats, fetchStats } = useGlobalStats()
+const { fetchBucket } = useBucket()
+onMounted(() => {
+  fetchStats()
+  fetchBucket()
+})
 
 // 回收站是图片列表的一种视图（/admin?view=trash），但作为一级导航项单独露出
 const menu = computed(() => [
@@ -39,11 +50,6 @@ const menu = computed(() => [
   { label: '关于项目', icon: Info, to: '/about', active: route.name === 'about' },
 ])
 
-const props = defineProps<{
-  /** 全站图片统计（首页拉取后传入；其他页面不需要时可不传，存储卡降级为仅显示配额） */
-  stats?: { count: number; totalSize: number; trashed: number } | null
-}>()
-
 // header 展示当前页面标题（大屏左侧品牌区已有站名，避免重复）
 const pageTitle = computed(() => {
   if (route.name === 'admin' && route.query.view === 'trash') return '回收站'
@@ -51,7 +57,7 @@ const pageTitle = computed(() => {
 })
 
 // 侧栏存储卡：已用 / 配额占比（以 useUploadSettings.storageQuotaGB 为总额基准）
-const usedBytes = computed(() => props.stats?.totalSize ?? 0)
+const usedBytes = computed(() => stats.value?.totalSize ?? 0)
 const quotaBytes = computed(() => settings.value.storageQuotaGB * 1024 * 1024 * 1024)
 const quotaPct = computed(() =>
   quotaBytes.value > 0 ? Math.min(100, Math.round((usedBytes.value / quotaBytes.value) * 100)) : 0,
@@ -107,23 +113,82 @@ const handleLogout = () => {
           </RouterLink>
         </nav>
 
-        <!-- 插画卡：纯 CSS 云朵 + 浮动图片徽章，呼应品牌 -->
+        <!-- 插画卡：与目标图一致的云朵 + 浮动图片徽章 + 文案 + 徽章 -->
         <div class="card relative overflow-hidden p-5 text-center">
           <div class="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-indigo-100/60 blur-2xl dark:bg-indigo-500/10" />
           <div class="pointer-events-none absolute -bottom-12 -left-10 h-32 w-32 rounded-full bg-violet-100/60 blur-2xl dark:bg-violet-500/10" />
-          <div class="relative mx-auto mb-3 h-28">
-            <div class="absolute bottom-1 left-1/2 h-10 w-36 -translate-x-1/2 rounded-full bg-indigo-100/80 blur-[2px] dark:bg-indigo-500/20" />
-            <div class="absolute bottom-4 left-1/2 h-14 w-28 -translate-x-1/2 rounded-3xl bg-gradient-to-br from-indigo-100 to-sky-100 shadow-sm dark:from-indigo-900/50 dark:to-sky-900/40" />
-            <div class="absolute bottom-10 left-[18%] h-9 w-9 rounded-full bg-gradient-to-br from-indigo-100 to-sky-100 shadow-sm dark:from-indigo-900/50 dark:to-sky-900/40" />
-            <div class="absolute bottom-8 right-[16%] h-7 w-7 rounded-full bg-gradient-to-br from-violet-100 to-indigo-100 shadow-sm dark:from-violet-900/50 dark:to-indigo-900/40" />
-            <div class="absolute bottom-9 left-1/2 flex h-14 w-14 -translate-x-1/2 animate-bob items-center justify-center rounded-2xl bg-white text-indigo-500 shadow-lg shadow-indigo-500/20 ring-1 ring-indigo-100 dark:bg-gray-800 dark:text-indigo-300 dark:ring-gray-700">
-              <Cloud class="h-7 w-7" />
+          <!-- 插画区：云朵 + 三张浮动照片 + 基座（对标目标图） -->
+          <div class="relative mx-auto mb-2 h-40 select-none" aria-hidden="true">
+            <!-- 星光 -->
+            <div class="absolute left-[9%] top-1.5 h-2 w-2 rotate-45 rounded-[2px] bg-indigo-200 dark:bg-indigo-500/50" />
+            <div class="absolute right-[15%] top-0 h-1.5 w-1.5 rotate-45 rounded-[1px] bg-violet-200 dark:bg-violet-500/50" />
+            <!-- 主云朵 -->
+            <div class="absolute left-1/2 top-2 h-12 w-32 -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-200 via-indigo-100 to-violet-200/80 dark:from-indigo-500/40 dark:via-indigo-500/25 dark:to-violet-500/25" />
+            <div class="absolute left-1/2 top-0.5 h-9 w-9 -translate-x-[54px] rounded-full bg-indigo-200 dark:bg-indigo-500/40" />
+            <div class="absolute left-1/2 top-1.5 h-7 w-7 translate-x-[32px] rounded-full bg-violet-200/90 dark:bg-violet-500/30" />
+            <!-- 右上链接徽标 -->
+            <div class="absolute right-[3%] top-7 flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-md ring-1 ring-indigo-100 dark:bg-gray-800 dark:ring-gray-700">
+              <Link2 class="h-4 w-4 text-indigo-400 dark:text-indigo-300" />
             </div>
+            <!-- 左侧小方块 -->
+            <div class="absolute left-[1%] top-[44px] h-4 w-4 rotate-12 rounded-[5px] bg-indigo-200/90 shadow-sm dark:bg-indigo-500/30" />
+            <!-- 左照片 -->
+            <div class="absolute bottom-10 left-[3%] w-[52px] -rotate-[8deg] rounded-md bg-white p-[3px] shadow-md ring-1 ring-indigo-100 dark:bg-gray-700 dark:ring-gray-600">
+              <svg viewBox="0 0 48 56" class="block h-[48px] w-full rounded-[4px]" preserveAspectRatio="xMidYMid slice">
+                <defs>
+                  <linearGradient id="sd-a" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#c7d2fe" />
+                    <stop offset="1" stop-color="#f5f3ff" />
+                  </linearGradient>
+                </defs>
+                <rect width="48" height="56" fill="url(#sd-a)" />
+                <circle cx="35" cy="13" r="6" fill="#ffffff" opacity="0.95" />
+                <polygon points="0,42 15,20 29,42" fill="#a5b4fc" />
+                <polygon points="17,42 33,22 48,42" fill="#818cf8" />
+                <polygon points="0,42 48,42 48,56 0,56" fill="#6366f1" opacity="0.35" />
+              </svg>
+            </div>
+            <!-- 中照片 -->
+            <div class="absolute bottom-8 left-1/2 w-16 -translate-x-1/2 rounded-md bg-white p-[3px] shadow-lg ring-1 ring-indigo-100 dark:bg-gray-700 dark:ring-gray-600">
+              <svg viewBox="0 0 56 64" class="block h-[58px] w-full rounded-[4px]" preserveAspectRatio="xMidYMid slice">
+                <defs>
+                  <linearGradient id="sd-b" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#ddd6fe" />
+                    <stop offset="1" stop-color="#faf5ff" />
+                  </linearGradient>
+                </defs>
+                <rect width="56" height="64" fill="url(#sd-b)" />
+                <circle cx="18" cy="16" r="7" fill="#ffffff" opacity="0.95" />
+                <polygon points="0,48 18,22 36,48" fill="#8b7cf6" />
+                <polygon points="22,48 40,26 58,48" fill="#7c6cf2" />
+                <polygon points="0,48 56,48 56,64 0,64" fill="#6d5ef0" opacity="0.3" />
+              </svg>
+            </div>
+            <!-- 右照片 -->
+            <div class="absolute bottom-10 right-[3%] w-[52px] rotate-[8deg] rounded-md bg-white p-[3px] shadow-md ring-1 ring-indigo-100 dark:bg-gray-700 dark:ring-gray-600">
+              <svg viewBox="0 0 48 56" class="block h-[48px] w-full rounded-[4px]" preserveAspectRatio="xMidYMid slice">
+                <defs>
+                  <linearGradient id="sd-c" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#bae6fd" />
+                    <stop offset="1" stop-color="#eef2ff" />
+                  </linearGradient>
+                </defs>
+                <rect width="48" height="56" fill="url(#sd-c)" />
+                <circle cx="13" cy="14" r="5" fill="#ffffff" opacity="0.95" />
+                <polygon points="0,42 16,22 30,42" fill="#7dd3fc" />
+                <polygon points="18,42 33,24 48,42" fill="#60a5fa" />
+                <polygon points="0,42 48,42 48,56 0,56" fill="#4f8dfd" opacity="0.3" />
+              </svg>
+            </div>
+            <!-- 基座 -->
+            <div class="absolute bottom-0.5 left-1/2 h-6 w-36 -translate-x-1/2 rounded-[50%] bg-indigo-100 dark:bg-indigo-500/20" />
+            <div class="absolute bottom-1.5 left-1/2 h-[18px] w-28 -translate-x-1/2 rounded-[50%] bg-indigo-200/70 dark:bg-indigo-500/25" />
+            <div class="absolute bottom-2.5 left-1/2 h-2.5 w-16 -translate-x-1/2 rounded-[50%] bg-white shadow-[0_0_14px_rgba(129,140,248,0.9)] dark:bg-indigo-300/70" />
           </div>
           <p class="relative text-sm font-semibold leading-relaxed text-indigo-600 dark:text-indigo-300">
             基于 EO 和 CNB 对象存储<br />的简易图床服务
           </p>
-          <div class="relative mt-3 flex flex-wrap items-center justify-center gap-1.5">
+          <div class="relative mt-3 flex items-center justify-center gap-1.5">
             <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
               <span class="flex h-4 w-4 items-center justify-center rounded bg-gradient-to-br from-blue-500 to-sky-400 text-[8px] font-black text-white">EO</span>
               EdgeOne
@@ -145,22 +210,23 @@ const handleLogout = () => {
           </div>
         </div>
 
-        <!-- 存储卡 -->
-        <div class="card mt-auto p-5">
+        <!-- 存储卡：与目标图一致的图标 + 数字 + 进度条 + 百分比 -->
+        <div class="card p-5">
           <div class="flex items-center gap-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
-            <Cloud class="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+            <Database class="h-4 w-4 text-gray-400 dark:text-gray-500" />
             存储空间
           </div>
-          <p class="mt-2 text-sm font-bold tabular-nums text-gray-900 dark:text-white">
-            {{ stats ? `${formatCompactSize(usedBytes)} / ${settings.storageQuotaGB} GB` : `配额 ${settings.storageQuotaGB} GB` }}
+          <p class="mt-1.5 text-center text-[15px] font-bold tabular-nums text-gray-900 dark:text-white">
+            <template v-if="stats">{{ formatCompactSize(usedBytes) }} <span class="font-semibold text-gray-400 dark:text-gray-500">/ {{ settings.storageQuotaGB }} GB</span></template>
+            <template v-else>配额 {{ settings.storageQuotaGB }} GB</template>
           </p>
-          <div class="mt-2.5 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800" role="progressbar" :aria-valuenow="quotaPct" aria-valuemin="0" aria-valuemax="100" :aria-label="`存储已用 ${quotaPct}%`">
+          <div class="mt-2 h-[7px] overflow-hidden rounded-full bg-indigo-50 dark:bg-gray-800" role="progressbar" :aria-valuenow="quotaPct" aria-valuemin="0" aria-valuemax="100" :aria-label="`存储已用 ${quotaPct}%`">
             <div
               class="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
               :style="{ width: `${quotaPct}%` }"
             />
           </div>
-          <p class="mt-1.5 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
+          <p class="mt-1 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
             {{ quotaPct }}%
           </p>
         </div>

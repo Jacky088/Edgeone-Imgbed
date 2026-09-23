@@ -33,9 +33,12 @@ import { buildFormats, type UploadResult, type LinkFormatKey } from '@/utils/for
 import { copyTextFallback } from '@/utils/clipboard'
 import { formatCompactSize, formatCompactCount, formatRecentTime } from '@/utils/format'
 import { useBucket } from '@/composables/useBucket'
+import { useGlobalStats } from '@/composables/useGlobalStats'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 
 const { bucket, fetchBucket } = useBucket()
+// 首页 ?stats=1 顺带拿到的统计直接写入全局侧栏，省一次请求
+const { stats: globalStats } = useGlobalStats()
 
 const router = useRouter()
 
@@ -103,6 +106,7 @@ const fetchHome = async () => {
     })
     if (data.code === 0 && !Array.isArray(data.data)) {
       stats.value = data.data.stats ?? null
+      if (stats.value) globalStats.value = stats.value
       const records = (data.data.records ?? []) as RecentItem[]
       recent.value = [...records]
         .sort((a, b) => b.createdAt - a.createdAt)
@@ -208,7 +212,7 @@ const goBatch = () => router.push('/admin')
 </script>
 
 <template>
-  <AppShell :stats="stats">
+  <AppShell>
     <div class="flex min-w-0 flex-col gap-4 sm:gap-5">
       <!-- 统计卡：桌面 4 列；窗口化窄屏 2 列；移动端 2 列 -->
       <div class="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">

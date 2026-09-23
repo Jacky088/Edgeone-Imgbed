@@ -32,6 +32,7 @@ import { buildFormats } from '@/utils/formatLinks'
 import { copyTextFallback } from '@/utils/clipboard'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 import { flushPendingRecords } from '@/utils/pendingRecords'
+import { useGlobalStats } from '@/composables/useGlobalStats'
 import AppShell from '@/components/layout/AppShell.vue'
 
 interface ImageRecord {
@@ -211,6 +212,10 @@ const formatDate = (ts: number) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// 全站侧栏存储卡同步：本页 ?stats=1 顺带拿到的统计直接写入全局，省一次请求
+const { stats: globalStats } = useGlobalStats()
+const syncGlobalStats = () => { if (stats.value) globalStats.value = stats.value }
+
 // 列表与统计一次请求拿全（KV 侧单次全表扫描 + ?stats=1 顺带统计）；quiet 静默刷新，不闪骨架屏
 const fetchList = async (quiet = false) => {
   if (!quiet) loading.value = true
@@ -226,6 +231,7 @@ const fetchList = async (quiet = false) => {
       } else {
         list.value = data.data.records ?? []
         stats.value = data.data.stats ?? null
+        syncGlobalStats()
       }
     }
   } catch (e) {
@@ -514,6 +520,7 @@ const copyFormat = (item: ImageRecord, key: 'url' | 'markdown' | 'html' | 'bbcod
 const showShortcuts = ref(false)
 
 onMounted(async () => {
+  if (globalStats.value && !stats.value) stats.value = globalStats.value
   await fetchList()
   // 上传成功但 KV 写记录失败的孤儿记录：静默补写，成功则刷新列表
   try {
@@ -534,7 +541,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <AppShell :stats="stats">
+  <AppShell>
     <div class="flex flex-col gap-4">
       <!-- 页头 -->
       <div class="flex flex-wrap items-end justify-between gap-3">
