@@ -53,7 +53,7 @@ const menu = computed(() => [
 // header 展示当前页面标题（大屏左侧品牌区已有站名，避免重复）
 const pageTitle = computed(() => {
   if (route.name === 'admin' && route.query.view === 'trash') return '回收站'
-  return menu.value.find((item) => item.active)?.label || 'Edgeone-Imgbed'
+  return menu.value.find((item) => item.active)?.label || 'CNB图床'
 })
 
 // 侧栏存储卡：已用 / 配额占比（以 useUploadSettings.storageQuotaGB 为总额基准）
@@ -83,7 +83,7 @@ const handleLogout = () => {
             <div class="absolute inset-0 rounded-2xl bg-gradient-to-t from-black/10 to-transparent"></div>
           </div>
           <h1 class="text-xl font-black tracking-tight text-gray-900 dark:text-white">
-            Edgeone-Imgbed
+            CNB图床
           </h1>
         </div>
 
@@ -189,15 +189,7 @@ const handleLogout = () => {
           <p class="relative text-sm font-semibold leading-relaxed text-indigo-600 dark:text-indigo-300">
             基于 EO 和 CNB 对象存储<br />的简易图床服务
           </p>
-          <div class="relative mt-3 flex items-center justify-center gap-1.5">
-            <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-              <span class="flex h-4 w-4 items-center justify-center rounded bg-gradient-to-br from-blue-500 to-sky-400 text-[8px] font-black text-white">EO</span>
-              EdgeOne
-            </span>
-            <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-              <span class="flex h-4 w-4 items-center justify-center rounded bg-gradient-to-br from-emerald-400 to-teal-500 text-[8px] font-black text-white">CB</span>
-              CloudBase
-            </span>
+          <div class="relative mt-3 flex items-center justify-center">
             <a
               href="https://github.com/Jacky088/Edgeone-Imgbed"
               target="_blank"

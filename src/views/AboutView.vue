@@ -15,14 +15,14 @@ const version = `v${pkg.version}`
           <Info class="h-6 w-6 text-indigo-600 dark:text-indigo-400" />
           关于项目
         </h2>
-        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">了解 Edgeone-Imgbed</p>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">了解 CNB图床</p>
       </div>
 
       <div class="card p-6 text-center sm:p-8">
         <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl brand-gradient text-white shadow-lg shadow-indigo-500/25 ring-1 ring-white/20 sm:h-16 sm:w-16">
           <Cloud class="h-7 w-7 sm:h-8 sm:w-8" />
         </div>
-        <h3 class="text-xl font-black tracking-tight text-gray-900 sm:text-2xl dark:text-white">Edgeone-Imgbed</h3>
+        <h3 class="text-xl font-black tracking-tight text-gray-900 sm:text-2xl dark:text-white">CNB图床</h3>
         <p class="mt-2 text-sm font-medium text-indigo-600 dark:text-indigo-400">{{ version }}</p>
         <p class="mx-auto mt-4 max-w-md text-sm leading-relaxed text-gray-500 dark:text-gray-400">
           基于 EdgeOne 与 CloudBase 对象存储构建的简易图床服务，自动压缩、生成缩略图、全球 CDN 加速。

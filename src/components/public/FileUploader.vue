@@ -14,7 +14,7 @@
       @drop.prevent="onDrop"
     >
       <input type="file" accept="image/*" multiple @change="onFileChange" class="hidden" />
-      <div v-if="tasks.length === 0" class="flex flex-col items-center gap-3 transition-transform duration-300 group-hover:-translate-y-1">
+      <div v-if="tasks.length === 0 || batchCompleted" class="flex flex-col items-center gap-3 transition-transform duration-300 group-hover:-translate-y-1">
         <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-500 shadow-sm transition-colors group-hover:bg-indigo-100 sm:h-16 sm:w-16 dark:bg-indigo-500/15 dark:text-indigo-300 dark:group-hover:bg-indigo-500/25">
           <UploadCloud class="h-7 w-7 sm:h-8 sm:w-8" />
         </div>
@@ -67,7 +67,7 @@
     >
       <input type="file" accept="image/*" multiple @change="onFileChange" class="hidden" />
 
-      <div v-if="tasks.length === 0" class="flex flex-col items-center gap-4 transition-transform duration-300 group-hover:-translate-y-1">
+      <div v-if="tasks.length === 0 || batchCompleted" class="flex flex-col items-center gap-4 transition-transform duration-300 group-hover:-translate-y-1">
         <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 shadow-sm transition-colors group-hover:bg-indigo-100 dark:bg-indigo-500/15 dark:text-indigo-300 dark:group-hover:bg-indigo-500/25">
           <UploadCloud class="h-8 w-8" />
         </div>
@@ -351,6 +351,8 @@ const { settings } = useUploadSettings()
 
 const tasks = ref<UploadTask[]>([])
 const rejectedFiles = ref<RejectedFile[]>([])
+// 整批全部上传成功后置 true：顶部拖拽区恢复空状态，下方任务列表（完成状态）保留展示
+const batchCompleted = ref<boolean>(false)
 const processingIndex = ref(0)
 const uploading = ref<boolean>(false)
 const uploadIndex = ref(0)
@@ -607,6 +609,8 @@ async function handleFiles(list: File[]): Promise<void> {
   rejectedFiles.value = rejected
   if (valid.length === 0) return
 
+  // 新一批文件进来：恢复待传状态，旧的完成列表被替换
+  batchCompleted.value = false
   revokePreviews()
   tasks.value = valid.map((f) => ({
     id: crypto.randomUUID(),
@@ -665,6 +669,7 @@ function clearAll(): void {
   revokePreviews()
   tasks.value = []
   rejectedFiles.value = []
+  batchCompleted.value = false
   processingIndex.value = 0
   uploadIndex.value = 0
   errorMsg.value = ''
@@ -879,6 +884,10 @@ async function retryTask(t: UploadTask): Promise<void> {
     }
     errorMsg.value = ''
     await uploadSingle(t)
+    // 重试后整批全部成功：同样恢复顶部空状态，下方完成列表保留
+    if (tasks.value.length > 0 && tasks.value.every((x) => x.status === 'success')) {
+      batchCompleted.value = true
+    }
   } catch (err) {
     console.error('图片处理失败:', err)
     t.status = 'error'
@@ -917,6 +926,8 @@ async function startUpload(): Promise<void> {
   const failCount = tasks.value.filter((t) => t.status === 'error').length
   if (failCount === 0) {
     toast.success(okCount > 1 ? `${okCount} 张图片全部上传成功` : '上传成功')
+    // 整批成功：顶部拖拽区恢复空状态待下一批，下方任务列表（完成）保留展示
+    batchCompleted.value = true
   } else if (okCount > 0) {
     toast.warning(`${okCount} 张成功，${failCount} 张失败`)
   } else {
