@@ -73,8 +73,9 @@ const handleLogout = () => {
 <template>
   <div class="app-bg relative min-h-dvh w-full overflow-x-hidden transition-colors duration-500">
     <div class="mx-auto flex min-h-dvh max-w-[1600px] gap-6 p-3 sm:p-5 lg:p-6">
-      <!-- 左：导航侧栏卡片（桌面端常驻；窗口化窄屏与移动端收起为底部标签栏） -->
-      <aside class="hidden w-60 shrink-0 flex-col gap-5 lg:flex xl:w-64">
+      <!-- 左：导航侧栏卡片（桌面端常驻；窗口化窄屏与移动端收起为底部标签栏）
+           卡片自然堆叠（品牌 / 导航 / 插画 / 存储），存储卡紧跟插画卡，不留空白 -->
+      <aside class="hidden w-60 shrink-0 self-start flex-col gap-5 lg:flex xl:w-64">
         <!-- 品牌 -->
         <div class="flex items-center gap-3 px-2 pt-2">
           <div class="relative flex h-11 w-11 items-center justify-center rounded-2xl brand-gradient text-white shadow-lg shadow-indigo-500/25 ring-1 ring-white/20">
