@@ -113,15 +113,69 @@ async function listRecords() {
   return records.sort((a, b) => b.createdAt - a.createdAt)
 }
 
-// 惰性清理：软删除超过保留期的记录物理移除
-async function purgeExpired(records) {
+// 从记录 URL 中提取 CNB 仓库内的图片路径（形如 abc/1234.png）
+// 记录 URL 形如 https://域名/api/img/abc/1234.png，对应代理目标 {repo}/-/imgs/abc/1234.png
+function extractCnbImagePath(url) {
+  if (!url) return ''
+  const markers = ['/api/img/', '-/imgs/', '-/files/']
+  let path = ''
+  for (const marker of markers) {
+    const idx = url.indexOf(marker)
+    if (idx !== -1) {
+      path = url.slice(idx + marker.length)
+      break
+    }
+  }
+  if (!path) return ''
+  // 去掉查询串/锚点，并拒绝路径遍历
+  path = path.split('?')[0].split('#')[0]
+  if (!path || path.includes('..') || path.startsWith('/')) return ''
+  return path
+}
+
+// 调用 CNB OpenAPI 物理删除仓库内的图片文件
+// 接口：DELETE https://api.cnb.cool/{slug}/-/imgs/{imgPath}
+// 访问令牌需具备 repo-manage:rw 权限；404 视为文件已不存在，按成功处理
+async function deleteCnbImage(env, imgPath) {
+  const slug = env?.SLUG_IMG
+  const token = env?.TOKEN_IMG
+  if (!slug || !token || !imgPath) return false
+  const encodedPath = imgPath.split('/').map(encodeURIComponent).join('/')
+  try {
+    const resp = await fetch(`https://api.cnb.cool/${slug}/-/imgs/${encodedPath}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (resp.ok || resp.status === 404) return true
+    console.error(`删除 CNB 图片失败(${resp.status}):`, imgPath)
+    return false
+  } catch (e) {
+    console.error('删除 CNB 图片异常:', imgPath, e)
+    return false
+  }
+}
+
+// 物理删除一条记录对应的 CNB 文件（主图 + 缩略图，去重）
+async function deleteRecordAssets(env, record) {
+  const paths = [
+    ...new Set([record?.url, record?.thumbnailUrl].map(extractCnbImagePath).filter(Boolean)),
+  ]
+  await Promise.all(paths.map((p) => deleteCnbImage(env, p)))
+}
+
+// 惰性清理：软删除超过保留期的记录物理移除（含 CNB 仓库中的图片文件）
+async function purgeExpired(records, env) {
   const now = Date.now()
   const expired = records.filter(
     (r) => r.deletedAt && now - r.deletedAt > SOFT_DELETE_TTL_MS,
   )
   if (expired.length === 0) return
   await Promise.all(
-    expired.map((r) => IMG_RECORDS_KV.delete(`${PREFIX}${String(r.id).replace(/[^a-zA-Z0-9_]/g, '')}`)),
+    expired.map(async (r) => {
+      // 先删文件再删记录，避免记录丢失后无法定位仓库文件
+      await deleteRecordAssets(env, r).catch(() => {})
+      await IMG_RECORDS_KV.delete(`${PREFIX}${String(r.id).replace(/[^a-zA-Z0-9_]/g, '')}`)
+    }),
   )
 }
 
@@ -146,7 +200,7 @@ export async function onRequest({ request, env }) {
     // 单次全表扫描 + 可选统计：GET（?stats=1 顺带返回统计，避免列表/统计两次扫描）
     async function snapshot() {
       const records = await listRecords()
-      await purgeExpired(records)
+      await purgeExpired(records, env)
       return records
     }
 
@@ -248,6 +302,8 @@ export async function onRequest({ request, env }) {
         const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
         if (!record) return json(1, '记录不存在', null, 404)
         if (purge) {
+          // 彻底删除：同步物理删除 CNB 仓库中的图片文件，再移除 KV 记录
+          await deleteRecordAssets(env, record)
           await IMG_RECORDS_KV.delete(key)
           return json(0, '已彻底删除', null)
         }
@@ -261,6 +317,7 @@ export async function onRequest({ request, env }) {
         const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
         if (!record) continue
         if (purge) {
+          await deleteRecordAssets(env, record)
           await IMG_RECORDS_KV.delete(key)
         } else {
           record.deletedAt = Date.now()

@@ -1246,7 +1246,7 @@ onUnmounted(() => {
         <AlertCircle class="h-5 w-5 shrink-0 mt-0.5" />
         <p>
           {{ trashMode
-            ? '回收站中的记录保留 30 天后自动清除；彻底删除不会物理删除 CNB 上的图片文件。'
+            ? '回收站中的记录保留 30 天后自动清除；彻底删除会同时物理删除 CNB 仓库中的图片文件，不可恢复。'
             : '删除仅移除 EdgeOne KV 中的链接记录并进入回收站（30 天），不会物理删除 CNB 上的图片文件。' }}
         </p>
       </div>
@@ -1348,7 +1348,7 @@ onUnmounted(() => {
 
             <p class="mt-3 text-xs leading-relaxed text-gray-400 dark:text-gray-500">
               {{ trashMode
-                ? '将从 KV 中彻底移除记录，CNB 上的原图文件不受影响。'
+                ? '将从 KV 中彻底移除记录，并同步物理删除 CNB 仓库中的原图文件（不可恢复）。'
                 : '记录将移入回收站（保留 30 天），CNB 上的原图文件不受影响。' }}
             </p>
 
