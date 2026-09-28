@@ -176,7 +176,10 @@ async function listRecords() {
     const page = await IMG_RECORDS_KV.list({ prefix: PREFIX, cursor, limit: 256 })
     const keys = Array.isArray(page?.keys) ? page.keys : []
     const values = await Promise.all(
-      keys.map(({ key }) => IMG_RECORDS_KV.get(key, { type: 'json' })),
+      keys
+        // 索引键同样命中 image_ 前缀，扫描时必须排除（否则索引数组会被当成一条记录混入）
+        .filter(({ key }) => key !== INDEX_KEY)
+        .map(({ key }) => IMG_RECORDS_KV.get(key, { type: 'json' })),
     )
 
     records.push(...values.filter(Boolean))

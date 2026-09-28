@@ -247,6 +247,16 @@ describe('image-records 接口集成（模拟 KV）', () => {
     expect(kv!.store.has('image_records_index')).toBe(true)
   })
 
+  it('全表扫描排除索引键自身（否则索引数组会被当成一条记录混入列表）', async () => {
+    // 预置一条真实记录 + 一个已存在的索引（索引键同样命中 image_ 前缀）
+    kv!.store.set('image_real1', JSON.stringify(rec('real1', 1)))
+    kv!.store.set('image_records_index', JSON.stringify([{ id: 'real1', createdAt: 1 }]))
+    // rebuild 强制走扫描路径：若不过滤索引键，扫描结果会混入 1 条坏记录
+    const rebuilt = await call('GET', '?rebuild=1')
+    expect(rebuilt.data.data.total).toBe(1)
+    expect(rebuilt.data.data.records[0].id).toBe('real1')
+  })
+
   it('扫描结果为空时不固化空索引（KV.list 不可用时不清空历史）', async () => {
     // 预置索引 + 本体，然后让 list 故障且删掉索引 → 模拟"索引丢失 + list 不可用"
     kv!.store.set('image_keep1', JSON.stringify(rec('keep1', 2)))
