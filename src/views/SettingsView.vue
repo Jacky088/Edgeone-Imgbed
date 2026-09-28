@@ -4,6 +4,7 @@ import axios from '@/utils/axios'
 import { Settings, RotateCcw, Images, Copy, Ruler, FileText, Rows3, Type, SearchCode, Trash2 } from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import AppShell from '@/components/layout/AppShell.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useUploadSettings, PAGE_SIZE_OPTIONS, type CopyFormat, type NamingRule } from '@/composables/useUploadSettings'
 import { useStorageUsage } from '@/composables/useStorageUsage'
 import { formatCompactSize } from '@/utils/format'
@@ -28,15 +29,54 @@ const orphanPurging = ref(false)
 
 const orphanTotalSize = computed(() => orphans.value.reduce((sum, o) => sum + (o.size || 0), 0))
 
+// 结果排序（时间 / 大小，倒序）
+const orphanSort = ref<'time' | 'size'>('time')
+
 // 展示与图片列表一致的卡片网格；缩略图(_thumb.webp)与主图同生共死，主图已在列表时隐藏避免重复卡片
-const displayOrphans = computed(() =>
-  orphans.value.filter((o) => {
+const displayOrphans = computed(() => {
+  const visible = orphans.value.filter((o) => {
     if (!/_thumb\.webp$/.test(o.path)) return true
     const main = o.path.replace(/_thumb\.webp$/, '')
     return !orphans.value.some((x) => x.path === main)
-  }),
-)
+  })
+  return [...visible].sort((a, b) => {
+    if (orphanSort.value === 'size') return (b.size || 0) - (a.size || 0)
+    return (Date.parse(b.createdAt || '') || 0) - (Date.parse(a.createdAt || '') || 0)
+  })
+})
 const hiddenThumbCount = computed(() => orphans.value.length - displayOrphans.value.length)
+
+// 部分勾选清理（Set 内部变更不触发响应式，用版本号驱动 computed）
+const selectedOrphans = ref<Set<string>>(new Set())
+const orphanSelectionVersion = ref(0)
+const isSelectedOrphan = (path: string) => selectedOrphans.value.has(path)
+const toggleOrphan = (path: string) => {
+  if (selectedOrphans.value.has(path)) selectedOrphans.value.delete(path)
+  else selectedOrphans.value.add(path)
+  orphanSelectionVersion.value++
+}
+const clearOrphanSelection = () => {
+  selectedOrphans.value.clear()
+  orphanSelectionVersion.value++
+}
+const selectedOrphanCount = computed(() => {
+  void orphanSelectionVersion.value
+  return selectedOrphans.value.size
+})
+// 勾选主图清理时连带其缩略图（_thumb.webp 与主图同生共死）
+const expandSelectedWithThumbs = (): OrphanAsset[] => {
+  const all = new Map(orphans.value.map((o) => [o.path, o]))
+  const out: OrphanAsset[] = []
+  const push = (p: string) => {
+    const o = all.get(p)
+    if (o && !out.some((x) => x.path === p)) out.push(o)
+  }
+  for (const p of selectedOrphans.value) {
+    push(p)
+    if (!/_thumb\.webp$/.test(p)) push(`${p}_thumb.webp`)
+  }
+  return out
+}
 
 // 代理同源输出（/api/img 白名单与上传扩展名一致），点击新窗口查看原图
 const orphanUrl = (o: OrphanAsset) => `/api/img/${o.path}`
@@ -62,6 +102,7 @@ const scanOrphans = async () => {
         otherTypes: data.data?.otherTypes || 0,
         truncated: !!(data.data?.truncated || data.data?.orphansTruncated),
       }
+      clearOrphanSelection()
       scanState.value = 'done'
     } else {
       scanMsg.value = data.msg || '扫描失败'
@@ -75,32 +116,43 @@ const scanOrphans = async () => {
   }
 }
 
-// 清理走 node 端删除接口（paths 直传，单次 ≤50 自动分批），删除前二次确认
+// 清理走 node 端删除接口（paths 直传，单次 ≤50 自动分批）；范围：全部 / 勾选项（连带缩略图）
+// 经 ConfirmDialog 应用内确认后执行，window.confirm 已弃用（与全站弹窗风格统一）
+const purgeConfirm = ref<'selected' | 'all' | null>(null)
+
 const purgeOrphans = async () => {
-  if (orphanPurging.value || orphans.value.length === 0) return
-  if (!window.confirm(`将永久删除 CNB 上的 ${orphans.value.length} 个孤儿文件，不可恢复。确定继续？`)) return
+  if (orphanPurging.value || !purgeConfirm.value) return
+  const scope = purgeConfirm.value
+  const targets = scope === 'all' ? orphans.value : expandSelectedWithThumbs()
+  const paths = targets.map((o) => o.path)
+  if (paths.length === 0) {
+    purgeConfirm.value = null
+    return
+  }
   orphanPurging.value = true
   let failed = 0
   try {
-    for (let i = 0; i < orphans.value.length; i += 50) {
-      const paths = orphans.value.slice(i, i + 50).map((o) => o.path)
+    for (let i = 0; i < paths.length; i += 50) {
+      const batch = paths.slice(i, i + 50)
       try {
         // node 端点：走 axios 默认 baseURL /api
-        const { data } = await axios.post('/file/delete-cnb', { paths })
+        const { data } = await axios.post('/file/delete-cnb', { paths: batch })
         if (data.code === 0) failed += (data.data?.failed || []).length
-        else failed += paths.length
+        else failed += batch.length
       } catch {
-        failed += paths.length
+        failed += batch.length
       }
     }
-    const okCount = orphans.value.length - failed
+    const okCount = paths.length - failed
     if (failed === 0) toast.success(`已清理 ${okCount} 个孤儿文件`)
     else toast.warning(`已清理 ${okCount} 个，${failed} 个删除失败（可重新扫描后重试）`)
+    clearOrphanSelection()
     // 同步刷新：孤儿已删除，立即更新侧栏存储卡的图片总量与占用
     await fetchUsage(true)
     await scanOrphans()
   } finally {
     orphanPurging.value = false
+    purgeConfirm.value = null
   }
 }
 
@@ -371,6 +423,26 @@ const handleReset = () => {
             </div>
           </div>
           <div class="flex shrink-0 items-center gap-2">
+            <!-- 结果排序切换 -->
+            <div
+              v-if="scanState === 'done' && orphans.length > 0"
+              class="flex h-9 items-center gap-0.5 rounded-xl border border-gray-200 bg-white p-1 dark:border-gray-700 dark:bg-gray-800"
+            >
+              <button
+                @click="orphanSort = 'time'"
+                class="rounded-lg px-2.5 text-xs font-bold transition-colors"
+                :class="orphanSort === 'time' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'"
+              >
+                时间
+              </button>
+              <button
+                @click="orphanSort = 'size'"
+                class="rounded-lg px-2.5 text-xs font-bold transition-colors"
+                :class="orphanSort === 'size' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'"
+              >
+                大小
+              </button>
+            </div>
             <button
               @click="scanOrphans"
               :disabled="scanState === 'scanning'"
@@ -416,6 +488,20 @@ const handleReset = () => {
           >
             <div v-for="orphan in displayOrphans" :key="orphan.path" class="card group overflow-hidden">
               <div class="relative aspect-[4/3] overflow-hidden bg-gray-100 dark:bg-gray-800">
+                <!-- 勾选清理 -->
+                <label
+                  class="absolute left-2.5 top-2.5 z-10 flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg bg-white/90 shadow-sm backdrop-blur transition-opacity dark:bg-gray-900/80"
+                  :class="isSelectedOrphan(orphan.path) ? 'opacity-100 ring-2 ring-indigo-500' : 'opacity-80 group-hover:opacity-100'"
+                  @click.stop
+                  title="勾选后可只清理选中项"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="isSelectedOrphan(orphan.path)"
+                    @change="toggleOrphan(orphan.path)"
+                    class="h-4 w-4 cursor-pointer accent-indigo-600"
+                  />
+                </label>
                 <a
                   :href="orphanUrl(orphan)"
                   target="_blank"
@@ -447,18 +533,38 @@ const handleReset = () => {
             </div>
           </div>
 
-          <div v-if="orphans.length > 0" class="mt-3 flex justify-end">
+          <div v-if="orphans.length > 0" class="mt-3 flex flex-wrap justify-end gap-2">
             <button
-              @click="purgeOrphans"
+              v-if="selectedOrphanCount > 0"
+              @click="purgeConfirm = 'selected'"
+              :disabled="orphanPurging"
+              class="flex h-9 items-center gap-1.5 rounded-xl border border-red-200 bg-white px-4 text-xs font-bold text-red-500 transition-all hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-500/30 dark:bg-gray-900 dark:text-red-400 dark:hover:bg-red-500/10"
+            >
+              <Trash2 class="h-3.5 w-3.5" />
+              清理选中 ({{ selectedOrphanCount }})
+            </button>
+            <button
+              @click="purgeConfirm = 'all'"
               :disabled="orphanPurging"
               class="flex h-9 items-center gap-1.5 rounded-xl bg-red-500 px-4 text-xs font-bold text-white shadow-md shadow-red-500/20 transition-all hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Trash2 class="h-3.5 w-3.5" />
-              {{ orphanPurging ? '清理中…' : `清理全部孤儿文件` }}
+              {{ orphanPurging ? '清理中…' : '清理全部孤儿文件' }}
             </button>
           </div>
         </div>
       </div>
+
+      <!-- 孤儿清理确认弹窗（替代原生 confirm，与全站弹窗风格统一） -->
+      <ConfirmDialog
+        :open="purgeConfirm !== null"
+        :title="`将永久删除 CNB 上的 ${purgeConfirm === 'selected' ? selectedOrphanCount : orphans.length} 个孤儿文件？`"
+        description="删除不可恢复；勾选主图清理时会连带其缩略图。"
+        confirm-text="删除"
+        :loading="orphanPurging"
+        @confirm="purgeOrphans"
+        @cancel="purgeConfirm = null"
+      />
 
       <!-- 列表每页条数 -->
       <div class="card p-6">

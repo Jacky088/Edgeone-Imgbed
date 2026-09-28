@@ -23,7 +23,8 @@ async function fetchStatsAndRecords(
   try {
     const { data } = await axios.get('/image-records', {
       baseURL: '',
-      params,
+      // tz：让服务端"今日上传"按本机时区 0 点切分（边缘函数跑在 UTC）
+      params: { ...params, tz: new Date().getTimezoneOffset() },
     })
     if (data?.code === 0 && !Array.isArray(data.data)) {
       if (data.data.stats) stats.value = data.data.stats

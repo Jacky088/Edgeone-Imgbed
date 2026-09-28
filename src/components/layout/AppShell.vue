@@ -23,13 +23,19 @@ import { formatCompactSize } from '@/utils/format'
 const route = useRoute()
 const router = useRouter()
 // 全站统计与桶名由 AppShell 统一拉取：所有页面侧栏/顶栏一致，无需各页面传入
-const { fetchStats } = useGlobalStats()
+const { stats: globalStats, fetchStats } = useGlobalStats()
 const { status: usageState, data: usageData, errorMsg: usageError, fetchUsage } = useStorageUsage()
 const { fetchBucket } = useBucket()
 onMounted(() => {
   fetchStats()
   fetchBucket()
   fetchUsage()
+})
+
+// 回收站待处理数量角标（stats 全站共享，上传/删除后自动刷新）
+const trashBadge = computed(() => {
+  const n = globalStats.value?.trashed ?? 0
+  return n > 0 ? (n > 99 ? '99+' : String(n)) : ''
 })
 
 // 回收站是图片列表的一种视图（/admin?view=trash），但作为一级导航项单独露出
@@ -46,6 +52,7 @@ const menu = computed(() => [
     icon: Archive,
     to: { path: '/admin', query: { view: 'trash' } },
     active: route.name === 'admin' && route.query.view === 'trash',
+    badge: trashBadge.value,
   },
   { label: '我的设置', icon: Settings, to: '/settings', active: route.name === 'settings' },
   { label: '关于项目', icon: Info, to: '/about', active: route.name === 'about' },
@@ -121,8 +128,15 @@ const handleLogout = () => {
             />
             {{ item.label }}
             <span
+              v-if="item.badge"
+              class="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-600 dark:bg-amber-500/20 dark:text-amber-300"
+            >
+              {{ item.badge }}
+            </span>
+            <span
               v-if="item.active"
-              class="ml-auto h-5 w-1 rounded-full bg-indigo-500 dark:bg-indigo-400"
+              class="h-5 w-1 rounded-full bg-indigo-500 dark:bg-indigo-400"
+              :class="item.badge ? 'ml-1.5' : 'ml-auto'"
             />
           </RouterLink>
         </nav>
@@ -326,10 +340,14 @@ const handleLogout = () => {
             "
           >
             <span
-              class="flex h-8 w-16 items-center justify-center rounded-full transition-colors"
+              class="relative flex h-8 w-16 items-center justify-center rounded-full transition-colors"
               :class="item.active ? 'bg-indigo-500/15 dark:bg-indigo-400/15' : ''"
             >
               <component :is="item.icon" class="h-6 w-6" :stroke-width="item.active ? 2.5 : 2" />
+              <span
+                v-if="item.badge"
+                class="absolute right-2.5 top-0 min-w-4 rounded-full bg-amber-500 px-1 text-center text-[9px] font-bold leading-4 text-white shadow"
+              >{{ item.badge }}</span>
             </span>
             <span class="text-[11px] font-medium">{{ item.label }}</span>
           </RouterLink>

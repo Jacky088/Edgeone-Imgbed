@@ -38,7 +38,7 @@ const requestConfig = {
   timeout: 5000,
   headers: {
     Accept: 'image/*, */*',
-    'User-Agent': 'Edgeone-Imgbed/1.5.0 (+https://github.com/Jacky088/Edgeone-Imgbed)',
+    'User-Agent': 'Edgeone-Imgbed/1.6.0 (+https://github.com/Jacky088/Edgeone-Imgbed)',
   },
 }
 const BASE_URL = 'https://cnb.cool/' + process.env.SLUG_IMG + '/-/imgs/'
@@ -61,15 +61,17 @@ app.use(securityHeaders)
 
 // 全局中间件处理所有请求
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`)
-
-  // 如果是图片代理请求，直接处理（宽松限流：防止被当免费代理刷流量）
+  // 图片代理为高频路径，访问日志仅在 DEBUG_LOG=1 时输出，避免日志量随图片流量线性膨胀
   if (req.url && req.url.startsWith('/img/')) {
+    if (process.env.DEBUG_LOG) {
+      console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`)
+    }
     return rateLimiter(120, 60000)(req, res, () => {
       createProxyHandler(BASE_URL, requestConfig, req, res)
     })
   }
 
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`)
   next()
 })
 

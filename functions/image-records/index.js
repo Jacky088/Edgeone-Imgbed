@@ -16,6 +16,7 @@ import {
   sortRecords,
   cnbImgPathOf,
   listCnbImgAssets,
+  deleteCnbImgFiles,
 } from './_lib.js'
 
 // 每条记录落盘的最简形状（拒绝非法/多余字段，宽高在此持久化）
@@ -95,10 +96,11 @@ export async function onRequest({ request, env }) {
       return json(429, '请求过于频繁，请稍后再试', null, 429)
     }
 
-    // 单次快照（索引优先，缺失回退扫描并重建）+ 惰性清理；force 时跳过索引强制全表扫描
-    async function records(force = false) {
-      const all = await snapshot(force)
-      return purgeExpired(all)
+    // 单次快照（默认快路径只读索引；?verify=1 逐条对齐本体；force 时全表扫描重建）
+    // + 惰性清理（顺带有界清理过期记录的 CNB 原图，失败留待孤儿扫描兜底）
+    async function records(force = false, verify = false) {
+      const all = await snapshot(force, verify)
+      return purgeExpired(all, env, true)
     }
 
     // CNB 孤儿文件扫描：?cnb-assets=1（边缘函数按文件路由，子路径不会进入本文件，
@@ -137,12 +139,17 @@ export async function onRequest({ request, env }) {
     if (request.method === 'GET') {
       // ?rebuild=1：跳过索引强制全表扫描重建（索引被误清/丢失时的恢复工具，
       // 也是 KV.list 可用性的试金石——返回 0 条即平台不支持扫描，需另寻恢复手段）
+      // ?verify=1：逐条读取记录本体对齐索引（低频校验工具，可剔除本体已丢失的幽灵条目）
       const forceRebuild = url.searchParams.get('rebuild') === '1'
-      const all = await records(forceRebuild)
+      const verifyIndex = url.searchParams.get('verify') === '1'
+      const all = await records(forceRebuild, verifyIndex)
       // 默认只返回未删除记录；?trash=1 返回回收站
       const showTrash = url.searchParams.get('trash') === '1'
       const filtered = showTrash ? all.filter((r) => r.deletedAt) : all.filter((r) => !r.deletedAt)
-      const stats = buildStats(all)
+      // ?tz=前端 getTimezoneOffset()：让"今日上传"按用户本地 0 点切分（边缘函数跑在 UTC）
+      const tzRaw = url.searchParams.get('tz')
+      const tz = tzRaw === null ? null : Number(tzRaw)
+      const stats = buildStats(all, tz)
 
       if (forceRebuild) {
         const rebuilt = sortRecords(filtered, 'createdAt', 'desc')
@@ -197,13 +204,17 @@ export async function onRequest({ request, env }) {
         if (invalid >= 0) return json(1, `第 ${invalid + 1} 条记录缺少必要字段`, null, 400)
 
         const normalizedItems = items.map((raw) => normalizeRecord(raw))
+        // 先整体校验再落盘：避免部分写入后才因非法 ID 失败（旧逻辑会留下半批本体）
         for (const normalized of normalizedItems) {
-          const safeId = safeIdOf(normalized.id)
-          if (!safeId) return json(1, '无效的记录 ID', null, 400)
-          await IMG_RECORDS_KV.put(recordKeyOf(safeId), JSON.stringify(normalized))
+          if (!safeIdOf(normalized.id)) return json(1, '无效的记录 ID', null, 400)
         }
-        // 合并写入索引：旧快照 + 本次新记录。此前直接用写入前的旧快照重建，
-        // 新记录永远进不了索引（接口返回成功但列表不可见）——批量记录丢失的根因
+        await Promise.all(
+          normalizedItems.map((normalized) =>
+            IMG_RECORDS_KV.put(recordKeyOf(safeIdOf(normalized.id)), JSON.stringify(normalized)),
+          ),
+        )
+        // 合并写入索引：现快照（快路径=1 次索引读；缺失时自动扫描重建）+ 本次新记录。
+        // 此前直接用写入前的旧快照重建，新记录永远进不了索引（接口返回成功但列表不可见）——批量记录丢失的根因
         const all = await records()
         const existingIds = new Set(all.map((r) => r.id))
         const freshIds = new Set()
@@ -244,9 +255,22 @@ export async function onRequest({ request, env }) {
         ok++
       }
       if (ok > 0) {
-        const all = await records()
-        // 扫描结果为空时不写空索引（KV.list 可能不可用，写空索引会埋掉全部历史记录）
-        if (all.length > 0) await writeIndex(buildIndex(all))
+        // 直接在索引上清除对应条目的 deletedAt（快路径不读本体，不能依赖对账回写）
+        const index = await readIndex()
+        if (index) {
+          const targetSet = new Set(targets)
+          let changed = false
+          for (let i = 0; i < index.length; i++) {
+            if (targetSet.has(index[i].id) && index[i].deletedAt) {
+              index[i] = { ...index[i], deletedAt: undefined }
+              changed = true
+            }
+          }
+          if (changed) await writeIndex(index)
+        } else {
+          // 索引缺失：从本体扫描重建（本体已反映本次恢复）
+          await snapshot()
+        }
       }
       if (targets.length === 1) {
         return ok === 1 ? json(0, '已恢复', null) : json(1, '记录不存在', null, 404)
@@ -259,14 +283,20 @@ export async function onRequest({ request, env }) {
       if (ids.length === 0) return json(1, 'ID不能为空', null, 400)
       const purge = url.searchParams.get('purge') === '1'
       // 批量删除：?id=a&id=b（上限 100）；默认软删除进回收站，30 天后惰性清理；?purge=1 彻底删除
+      // 彻底删除由服务端联动删除 CNB 原图（尽力而为），失败数经响应 cnbFailed 直达前端
       const targets = ids.slice(0, 100)
       const keyOf = (id) => recordKeyOf(safeIdOf(id))
+      const cnbPathsOf = (record) =>
+        [cnbImgPathOf(record?.url), cnbImgPathOf(record?.thumbnailUrl)].filter(Boolean)
+
       if (targets.length === 1) {
         const key = keyOf(targets[0])
         const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
         if (!record) return json(0, '已删除', null) // 幂等：重复删除不再 404
+        let cnbFailed = 0
         if (purge) {
           await IMG_RECORDS_KV.delete(key)
+          cnbFailed = (await deleteCnbImgFiles(env, cnbPathsOf(record))).failed
         } else {
           record.deletedAt = Date.now()
           await IMG_RECORDS_KV.put(key, JSON.stringify(record))
@@ -281,27 +311,53 @@ export async function onRequest({ request, env }) {
             await writeIndex(index)
           }
         }
-        return json(0, purge ? '已彻底删除' : '已移入回收站', null)
+        return json(0, purge ? '已彻底删除' : '已移入回收站', purge ? { cnbFailed } : null)
       }
       let ok = 0
+      const touched = [] // { id, deletedAt?, purge }
+      const cnbPaths = []
       for (const id of targets) {
         const key = keyOf(id)
         const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
         if (!record) continue
         if (purge) {
+          cnbPaths.push(...cnbPathsOf(record))
           await IMG_RECORDS_KV.delete(key)
+          touched.push({ id: record.id, purge: true })
         } else {
           record.deletedAt = Date.now()
           await IMG_RECORDS_KV.put(key, JSON.stringify(record))
+          touched.push({ id: record.id, deletedAt: record.deletedAt, purge: false })
         }
         ok++
       }
+      // 索引直接按 id 维护（快路径不读本体，不能依赖对账回写）
       if (ok > 0) {
-        const all = await records()
-        // 扫描结果为空时不写空索引（KV.list 可能不可用，写空索引会埋掉全部历史记录）
-        if (all.length > 0) await writeIndex(buildIndex(all))
+        const index = await readIndex()
+        if (index) {
+          let changed = false
+          for (const t of touched) {
+            const pos = index.findIndex((r) => r.id === t.id)
+            if (pos < 0) continue
+            changed = true
+            if (t.purge) index.splice(pos, 1)
+            else index[pos] = { ...index[pos], deletedAt: t.deletedAt }
+          }
+          if (changed) await writeIndex(index)
+        } else {
+          // 索引缺失：从本体扫描重建（本体已反映本次删除）
+          await snapshot()
+        }
       }
-      return json(0, purge ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`, { ok, fail: targets.length - ok })
+      let cnbFailed = 0
+      if (purge && cnbPaths.length > 0) {
+        cnbFailed = (await deleteCnbImgFiles(env, cnbPaths)).failed
+      }
+      return json(0, purge ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`, {
+        ok,
+        fail: targets.length - ok,
+        cnbFailed,
+      })
     }
 
     return json(405, '不支持的请求方法', null, 405)

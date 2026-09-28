@@ -1,12 +1,15 @@
 const PREFIX = 'image_'
 // 全量索引 key：保存所有记录的精简元数据（id/name/url/size/type/createdAt/width/height/deletedAt），
-// 读列表 = 1 次 KV get，替代旧的逐 key 全表扫描（list + N 次 get）
+// 读列表 = 1 次 KV get（快路径直接信任索引），替代旧的逐 key 全表扫描（list + N 次 get）
 const INDEX_KEY = 'image_records_index'
+// 索引分片 key 前缀：单值超限时主键改存 { __sharded, shards } 标记，
+// 分片本体在 image_records_index_shard_0..N-1；同样命中 image_ 前缀，全表扫描时必须排除
+const INDEX_SHARD_PREFIX = 'image_records_index_shard_'
 // 软删除记录保留 30 天，过期由读取时惰性清理
 const SOFT_DELETE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 // 索引单值上限（KV 值大小限制约为 1MB~25MB 视平台而定，保守取 900KB 字符）
-// 超限时仍可正常写入单条记录（索引降级），读取端回退到全表扫描
+// 超限时自动切分为分片写入（读取端透明合并），不再退化为全表扫描
 const INDEX_SAFE_LIMIT_BYTES = 900 * 1024
 
 function json(code, msg, data, status = 200) {
@@ -155,11 +158,24 @@ function recordKeyOf(safeId) {
 
 // ---------------------------------------------------------------- 索引层
 
-// 读取索引；缺失/损坏时返回 null（由调用方决定是否回退扫描并重建）
+// 读取索引；缺失/损坏时返回 null（由调用方决定是否回退扫描并重建）。
+// 超限分片布局：主键为 { __sharded: true, shards: N } 标记，分片本体按序合并
 async function readIndex() {
   try {
     const raw = await IMG_RECORDS_KV.get(INDEX_KEY, { type: 'json' })
     if (Array.isArray(raw)) return raw
+    if (raw && typeof raw === 'object' && Number.isFinite(raw.shards) && raw.shards > 0) {
+      const pages = await Promise.all(
+        Array.from({ length: raw.shards }, (_, i) =>
+          IMG_RECORDS_KV.get(`${INDEX_SHARD_PREFIX}${i}`, { type: 'json' }).catch(() => null),
+        ),
+      )
+      const merged = []
+      for (const page of pages) {
+        if (Array.isArray(page)) merged.push(...page)
+      }
+      return merged
+    }
     return null
   } catch {
     return null
@@ -177,8 +193,8 @@ async function listRecords() {
     const keys = Array.isArray(page?.keys) ? page.keys : []
     const values = await Promise.all(
       keys
-        // 索引键同样命中 image_ 前缀，扫描时必须排除（否则索引数组会被当成一条记录混入）
-        .filter(({ key }) => key !== INDEX_KEY)
+        // 索引键与分片键同样命中 image_ 前缀，扫描时必须排除（否则会被当成记录混入列表）
+        .filter(({ key }) => key !== INDEX_KEY && !key.startsWith(INDEX_SHARD_PREFIX))
         .map(({ key }) => IMG_RECORDS_KV.get(key, { type: 'json' })),
     )
 
@@ -208,27 +224,71 @@ function buildIndex(records) {
     }))
 }
 
-// 写入索引；超过安全体积时放弃写入（读取端会回退扫描），返回是否成功
+// 写入索引：
+// - 总体积在安全上限内 → 单键写入（并清理缩容后遗留的分片键，防幽灵条目复活）
+// - 超限 → 贪心按条切分为分片，主键写 { __sharded, shards } 标记
+// 返回是否成功（失败时读取端回退全表扫描）
 async function writeIndex(index) {
   try {
+    // 探测写入前的分片布局，用于本次写入后清理多余分片
+    let prevShards = 0
+    try {
+      const prev = await IMG_RECORDS_KV.get(INDEX_KEY, { type: 'json' })
+      if (prev && !Array.isArray(prev) && Number.isFinite(prev.shards)) prevShards = prev.shards
+    } catch {
+      // ignore
+    }
+
     const payload = JSON.stringify(index)
-    if (payload.length > INDEX_SAFE_LIMIT_BYTES) return false
-    await IMG_RECORDS_KV.put(INDEX_KEY, payload)
+    if (payload.length <= INDEX_SAFE_LIMIT_BYTES) {
+      await IMG_RECORDS_KV.put(INDEX_KEY, payload)
+      for (let i = 0; i < prevShards; i++) {
+        Promise.resolve(IMG_RECORDS_KV.delete(`${INDEX_SHARD_PREFIX}${i}`)).catch(() => {})
+      }
+      return true
+    }
+
+    // 贪心装箱：按单条序列化体积切分，每片不超过安全上限
+    const shards = []
+    let current = []
+    let currentLen = 2 // '[]'
+    for (const entry of index) {
+      const entryLen = JSON.stringify(entry).length + 1
+      if (current.length > 0 && currentLen + entryLen > INDEX_SAFE_LIMIT_BYTES) {
+        shards.push(current)
+        current = []
+        currentLen = 2
+      }
+      current.push(entry)
+      currentLen += entryLen
+    }
+    if (current.length > 0) shards.push(current)
+
+    await Promise.all(
+      shards.map((shard, i) => IMG_RECORDS_KV.put(`${INDEX_SHARD_PREFIX}${i}`, JSON.stringify(shard))),
+    )
+    await IMG_RECORDS_KV.put(INDEX_KEY, JSON.stringify({ __sharded: true, shards: shards.length }))
+    for (let i = shards.length; i < prevShards; i++) {
+      Promise.resolve(IMG_RECORDS_KV.delete(`${INDEX_SHARD_PREFIX}${i}`)).catch(() => {})
+    }
     return true
   } catch {
     return false
   }
 }
 
-// 保证拿到最新记录集：优先索引，但索引可能落后于记录本体（如恢复后未同步）。
-// 以记录本体的 deletedAt 为准逐条对齐，随后写回。
-// force=true 时跳过索引强制全表扫描重建（?rebuild=1 恢复工具，历史被误清时自救）。
-// 刚写入的记录容忍读写延迟：60 秒宽限期内本体暂时读不到不剔除（防最终一致性延迟误判为已删除）
+// 保证拿到最新记录集，三档策略：
+// - 快路径（默认）：直接信任索引（写路径已同步维护索引），1 次 KV 读出全量列表，
+//   不再逐条读记录本体对账——旧实现对每条索引条目串行 get 本体，N 条记录 = N 次 KV 往返
+// - verify=true：逐条对齐本体 deletedAt（旧行为，低频校验/修复，?verify=1 触发）
+// - force=true：跳过索引强制全表扫描重建（?rebuild=1 恢复工具，历史被误清时自救）
+// verify 的本体校验容忍读写延迟：60 秒宽限期内暂时读不到不剔除（防最终一致性误判）
 const EVICT_GRACE_MS = 60 * 1000
 
-async function snapshot(force = false) {
+async function snapshot(force = false, verify = false) {
   const index = force ? null : await readIndex()
-  if (index) {
+  if (index && !verify) return index
+  if (index && verify) {
     const now = Date.now()
     let changed = false
     for (let i = 0; i < index.length; i++) {
@@ -259,8 +319,12 @@ async function snapshot(force = false) {
   return rebuilt
 }
 
-// 惰性清理：软删除超过保留期的记录物理移除（同时清索引与记录本体）
-async function purgeExpired(records) {
+// 惰性清理：软删除超过保留期的记录物理移除（记录本体 + 索引条目同步清除）。
+// cnbCleanup=true 时顺带删除 CNB 原图（每次调用有上限，避免读路径被网络请求拖垮；
+// 失败仅留孤儿文件，可由孤儿扫描兜底）。需 env 提供 SLUG_IMG/TOKEN_IMG。
+const CNB_PURGE_MAX_RECORDS = 10
+
+async function purgeExpired(records, env = null, cnbCleanup = false) {
   const now = Date.now()
   const expired = records.filter(
     (r) => r.deletedAt && now - r.deletedAt > SOFT_DELETE_TTL_MS,
@@ -270,20 +334,46 @@ async function purgeExpired(records) {
     expired.map((r) => IMG_RECORDS_KV.delete(recordKeyOf(safeIdOf(r.id)))),
   )
   const expiredIds = new Set(expired.map((r) => r.id))
-  return records.filter((r) => !expiredIds.has(r.id))
+  const rest = records.filter((r) => !expiredIds.has(r.id))
+  // 快路径不再读本体对账，索引剔除必须在这里显式完成
+  await writeIndex(buildIndex(rest))
+  if (cnbCleanup && env) {
+    const paths = expired
+      .slice(0, CNB_PURGE_MAX_RECORDS)
+      .flatMap((r) => [cnbImgPathOf(r.url), cnbImgPathOf(r.thumbnailUrl)])
+      .filter(Boolean)
+    if (paths.length > 0) {
+      try {
+        await deleteCnbImgFiles(env, paths)
+      } catch {
+        // 尽力而为：失败留待孤儿扫描兜底
+      }
+    }
+  }
+  return rest
 }
 
 // ---------------------------------------------------------------- 统计 / 切片
 
-function buildStats(records) {
+// tzOffsetMinutes：前端 new Date().getTimezoneOffset() 的值（分钟，东八区为 -480），
+// 使“今日上传”按用户本地 0 点切分；缺省回退服务器时区 0 点（边缘环境即 UTC）
+function buildStats(records, tzOffsetMinutes = null) {
   const byType = {}
   let totalSize = 0
   let trashedSize = 0
   let trashed = 0
   let todayCount = 0
-  const dayStart = new Date()
-  dayStart.setHours(0, 0, 0, 0)
-  const dayStartTs = dayStart.getTime()
+  let dayStartTs
+  if (Number.isFinite(tzOffsetMinutes)) {
+    const nowMs = Date.now()
+    // 用户本地 0 点：本地时钟对日取整后，再按偏移量换回 UTC 时间戳
+    dayStartTs =
+      Math.floor((nowMs - tzOffsetMinutes * 60000) / 86400000) * 86400000 + tzOffsetMinutes * 60000
+  } else {
+    const dayStart = new Date()
+    dayStart.setHours(0, 0, 0, 0)
+    dayStartTs = dayStart.getTime()
+  }
   for (const r of records) {
     if (r.deletedAt) {
       // 软删除记录的原图仍占用 CNB 存储（删除不落盘），单独暴露体积便于用户感知
@@ -388,9 +478,69 @@ async function listCnbImgAssets(env) {
   return { ok: true, assets, others, truncated: true }
 }
 
+// ===== CNB 源文件删除（彻底删除 / 30 天过期清理联动）=====
+// 官方接口 DELETE /{repo}/-/imgs/{imgPath}（需令牌 repo-manage:rw）。尽力而为：
+// 失败仅留孤儿文件（孤儿扫描可兜底），404 视为成功（文件本就不存在）。
+// 与 node-functions/api/_utils.ts 的 deleteFromCnb 同规则；此处供边缘函数直接闭环调用
+const CNB_DELETE_CHUNK = 50
+const CNB_DELETE_TIMEOUT_MS = 15000
+
+// imgPath 白名单：Unicode 字母数字 + ._-/；禁止路径遍历与反斜杠
+function isValidImgPath(p) {
+  if (!p || p.length > 512) return false
+  if (p.startsWith('/') || p.includes('\\') || p.includes('..')) return false
+  return /^[\p{L}\p{N}._\-/]+$/u.test(p)
+}
+
+// 分块并发删除 CNB 源文件；自身不抛出，返回 { ok, failed, skipped }。
+// 缺少 env 配置时所有有效路径计入 failed（如实上报"未删除"，不谎报成功）
+async function deleteCnbImgFiles(env, paths) {
+  const slug = env?.SLUG_IMG
+  const token = env?.TOKEN_IMG
+  const all = Array.isArray(paths) ? paths : []
+  const unique = [...new Set(all.filter((p) => typeof p === 'string' && isValidImgPath(p)))]
+  const skipped = all.length - unique.length
+  if (!slug || !token || unique.length === 0) {
+    return { ok: 0, failed: unique.length, skipped }
+  }
+
+  let ok = 0
+  let failed = 0
+  for (let i = 0; i < unique.length; i += CNB_DELETE_CHUNK) {
+    const results = await Promise.all(
+      unique.slice(i, i + CNB_DELETE_CHUNK).map(async (imgPath) => {
+        const encoded = imgPath.split('/').map(encodeURIComponent).join('/')
+        let timer
+        try {
+          const resp = await Promise.race([
+            fetch(`https://api.cnb.cool/${slug}/-/imgs/${encoded}`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('timeout')), CNB_DELETE_TIMEOUT_MS)
+            }),
+          ])
+          return resp.ok || resp.status === 404
+        } catch {
+          return false
+        } finally {
+          clearTimeout(timer)
+        }
+      }),
+    )
+    for (const good of results) {
+      if (good) ok++
+      else failed++
+    }
+  }
+  return { ok, failed, skipped }
+}
+
 export {
   INDEX_KEY,
   INDEX_SAFE_LIMIT_BYTES,
+  INDEX_SHARD_PREFIX,
   json,
   verifyAuthToken,
   isAuthorized,
@@ -409,4 +559,6 @@ export {
   cnbImgPathOf,
   normalizeAssetPath,
   listCnbImgAssets,
+  isValidImgPath,
+  deleteCnbImgFiles,
 }

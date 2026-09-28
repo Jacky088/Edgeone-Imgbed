@@ -319,7 +319,10 @@ async function proxyImageRequest(
         return res.status(403).json({ error: 'Forbidden image host' })
       }
       const targetUrl = target.toString()
-      console.log(`🔄 [Proxy] ${req.path || req.url} -> ${targetUrl}`)
+      // 成功转发日志仅调试用（DEBUG_LOG=1），高频路径不刷日志
+      if (process.env.DEBUG_LOG) {
+        console.log(`🔄 [Proxy] ${req.path || req.url} -> ${targetUrl}`)
+      }
 
       const fetchOptions = {
         method: 'GET',

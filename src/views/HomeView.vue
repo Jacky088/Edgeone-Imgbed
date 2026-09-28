@@ -35,6 +35,7 @@ import { formatCompactSize, formatCompactCount, formatRecentTime } from '@/utils
 import { useBucket } from '@/composables/useBucket'
 import { useGlobalStats } from '@/composables/useGlobalStats'
 import { useUploadSettings } from '@/composables/useUploadSettings'
+import { flushPendingRecords } from '@/utils/pendingRecords'
 
 const { fetchBucket } = useBucket()
 // 首页 recent=4 与侧栏统计共用同一次请求（fetchRecentWithStats 内部去重合并）
@@ -123,7 +124,20 @@ const fetchHome = async (quiet = false) => {
   }
 }
 
-onMounted(fetchHome)
+onMounted(async () => {
+  fetchHome()
+  // 上传成功但 KV 写记录失败的历史遗留：静默补写，成功后刷新首页数据
+  // （此前只在 /admin 挂载时补写，只传图不开后台的用户队列会一直攒着）
+  try {
+    const flushed = await flushPendingRecords()
+    if (flushed > 0) {
+      toast.success(`已补写 ${flushed} 条之前保存失败的记录`)
+      fetchHome(true)
+    }
+  } catch {
+    // 补写失败不打扰主流程（队列保留，下次再试）
+  }
+})
 
 // ---------- 批量上传结果（上传成功后出现在最近上传下方） ----------
 const results = ref<UploadResult[]>([])

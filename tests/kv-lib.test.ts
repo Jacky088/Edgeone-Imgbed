@@ -1,6 +1,17 @@
 // KV 记录接口 _lib.js 纯函数测试（buildStats / sortRecords / buildIndex / purge 过滤 / 共享限流 / 孤儿路径归一化）
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { buildStats, sortRecords, buildIndex, isRateLimited, cnbImgPathOf, normalizeAssetPath } from '../functions/image-records/_lib.js'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import {
+  buildStats,
+  sortRecords,
+  buildIndex,
+  isRateLimited,
+  cnbImgPathOf,
+  normalizeAssetPath,
+  readIndex,
+  writeIndex,
+  INDEX_SAFE_LIMIT_BYTES,
+  INDEX_SHARD_PREFIX,
+} from '../functions/image-records/_lib.js'
 import { onRequest } from '../functions/image-records/index.js'
 
 const now = Date.now()
@@ -31,6 +42,28 @@ describe('buildStats', () => {
     const old = [{ id: 'x', name: 'x', url: 'ux', size: 1, type: 'image/png', createdAt: yesterday.getTime() }]
     expect(buildStats(old).todayCount).toBe(0)
     expect(buildStats(old).count).toBe(1)
+  })
+
+  it('tz 参数：今日按调用方本地 0 点切分（边缘函数跑在 UTC，需前端传偏移量）', () => {
+    vi.useFakeTimers()
+    try {
+      // 2026-09-28T00:30:00Z = 东八区 08:30；本地 0 点 = 2026-09-27T16:00Z
+      vi.setSystemTime(new Date('2026-09-28T00:30:00Z'))
+      // UTC 口径的"昨天 23:59"，对东八区用户是"今天 07:59"
+      const localToday = new Date('2026-09-27T23:59:00Z').getTime()
+      const daysAgo = new Date('2026-09-25T12:00:00Z').getTime()
+      const recs = [
+        { id: 'a', name: 'a', url: 'u', size: 1, type: 'image/png', createdAt: localToday },
+        { id: 'b', name: 'b', url: 'u', size: 1, type: 'image/png', createdAt: daysAgo },
+      ]
+      expect(buildStats(recs, -480).todayCount).toBe(1)
+      // 无 tz 回退"服务器本地时区 0 点"：与运行环境 new Date 的 0 点口径一致（边缘环境即 UTC）
+      const serverMidnight = new Date()
+      serverMidnight.setHours(0, 0, 0, 0)
+      expect(buildStats(recs).todayCount).toBe(localToday >= serverMidnight.getTime() ? 1 : 0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -190,6 +223,18 @@ function rec(id: string, minsAgo = 0) {
   return { id, name: `${id}.png`, url: `https://s.example/api/img/${id}.png`, size: 123, type: 'image/png', createdAt: Date.now() - minsAgo * 60000 }
 }
 
+// 构造超大的索引数组（每条约 700 字节，n=1500 时约 1MB，必定触发分片）
+function makeBigIndex(n: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `id${i}`,
+    name: 'x'.repeat(600),
+    url: `https://s.example/api/img/f${i}.png`,
+    size: 1,
+    type: 'image/png',
+    createdAt: i,
+  }))
+}
+
 describe('image-records 接口集成（模拟 KV）', () => {
   beforeEach(() => {
     kv = makeFakeKV()
@@ -267,10 +312,88 @@ describe('image-records 接口集成（模拟 KV）', () => {
     expect(kv!.store.has('image_records_index')).toBe(false)
   })
 
-  it('60 秒宽限期：刚写入的记录本体暂时读不到时仍保留在列表', async () => {
+  it('快路径信任索引：本体暂时读不到时记录仍可见（默认 GET 不逐条读本体）', async () => {
     await call('POST', '', { records: [rec('grace1')] })
     kv!.store.delete('image_grace1') // 模拟读写延迟：本体暂时不可见
     const get = await call('GET')
     expect(get.data.data.map((r: any) => r.id)).toEqual(['grace1'])
+  })
+
+  it('?verify=1：本体已丢失且超过宽限期的幽灵条目从索引剔除', async () => {
+    await call('POST', '', { records: [rec('gone1', 5)] }) // 5 分钟前创建，远超 60 秒宽限期
+    kv!.store.delete('image_gone1')
+    const get = await call('GET', '?verify=1')
+    expect(get.data.data).toHaveLength(0)
+    const index = JSON.parse(kv!.store.get('image_records_index')!)
+    expect(index).toHaveLength(0)
+  })
+
+  it('?verify=1：宽限期内本体暂时读不到仍保留（防最终一致性误判）', async () => {
+    await call('POST', '', { records: [rec('grace2')] })
+    kv!.store.delete('image_grace2')
+    const get = await call('GET', '?verify=1')
+    expect(get.data.data.map((r: any) => r.id)).toEqual(['grace2'])
+  })
+
+  it('软删除：索引条目打上 deletedAt 标记，回收站视图免扫描可见', async () => {
+    await call('POST', '', { records: [rec('sd1')] })
+    const del = await call('DELETE', '?id=sd1')
+    expect(del.data.code).toBe(0)
+    const index = JSON.parse(kv!.store.get('image_records_index')!)
+    expect(index[0].deletedAt).toBeTruthy()
+    const trash = await call('GET', '?trash=1')
+    expect(trash.data.data.map((r: any) => r.id)).toEqual(['sd1'])
+  })
+
+  it('恢复：索引条目清除 deletedAt，重新回到默认列表', async () => {
+    await call('POST', '', { records: [rec('rs1')] })
+    await call('DELETE', '?id=rs1')
+    const put = await call('PUT', '?id=rs1')
+    expect(put.data.code).toBe(0)
+    const index = JSON.parse(kv!.store.get('image_records_index')!)
+    expect(index[0].deletedAt).toBeUndefined()
+    const get = await call('GET')
+    expect(get.data.data.map((r: any) => r.id)).toEqual(['rs1'])
+  })
+
+  it('彻底删除：服务端联动删除 CNB 源文件，失败数如实上报；索引条目同步移除', async () => {
+    await call('POST', '', { records: [rec('pg1')] })
+    // 测试 env 为空（无 SLUG_IMG/TOKEN_IMG）：有效路径计入 failed，不谎报成功
+    const del = await call('DELETE', '?id=pg1&purge=1')
+    expect(del.data.code).toBe(0)
+    expect(del.data.data.cnbFailed).toBe(1)
+    expect(kv!.store.has('image_pg1')).toBe(false)
+    const index = JSON.parse(kv!.store.get('image_records_index')!)
+    expect(index.find((r: any) => r.id === 'pg1')).toBeUndefined()
+  })
+
+  it('索引分片：超过单值上限时自动切分，读取端透明合并', async () => {
+    const big = makeBigIndex(1500)
+    expect(JSON.stringify(big).length).toBeGreaterThan(INDEX_SAFE_LIMIT_BYTES)
+    expect(await writeIndex(big)).toBe(true)
+    const marker = JSON.parse(kv!.store.get('image_records_index')!)
+    expect(marker.__sharded).toBe(true)
+    expect(marker.shards).toBeGreaterThanOrEqual(2)
+    expect(kv!.store.has(`${INDEX_SHARD_PREFIX}0`)).toBe(true)
+    const merged = await readIndex()
+    expect(merged).toHaveLength(1500)
+    expect(merged[0].id).toBe('id0')
+    expect(merged.at(-1)!.id).toBe('id1499')
+  })
+
+  it('索引分片：缩容回单键后清理遗留分片键（防幽灵条目复活）', async () => {
+    await writeIndex(makeBigIndex(1500))
+    expect(await writeIndex(makeBigIndex(10))).toBe(true)
+    const main = JSON.parse(kv!.store.get('image_records_index')!)
+    expect(Array.isArray(main)).toBe(true)
+    const shardKeys = [...kv!.store.keys()].filter((k) => k.startsWith(INDEX_SHARD_PREFIX))
+    expect(shardKeys).toHaveLength(0)
+    expect(await readIndex()).toHaveLength(10)
+  })
+
+  it('分片索引布局下 GET 快路径正常返回全量列表', async () => {
+    await writeIndex(makeBigIndex(1200))
+    const get = await call('GET')
+    expect(get.data.data).toHaveLength(1200)
   })
 })
