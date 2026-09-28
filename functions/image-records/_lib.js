@@ -218,15 +218,21 @@ async function writeIndex(index) {
 }
 
 // 保证拿到最新记录集：优先索引，但索引可能落后于记录本体（如恢复后未同步）。
-// 以记录本体的 deletedAt 为准逐条对齐，随后写回
-async function snapshot() {
-  const index = await readIndex()
+// 以记录本体的 deletedAt 为准逐条对齐，随后写回。
+// force=true 时跳过索引强制全表扫描重建（?rebuild=1 恢复工具，历史被误清时自救）。
+// 刚写入的记录容忍读写延迟：60 秒宽限期内本体暂时读不到不剔除（防最终一致性延迟误判为已删除）
+const EVICT_GRACE_MS = 60 * 1000
+
+async function snapshot(force = false) {
+  const index = force ? null : await readIndex()
   if (index) {
+    const now = Date.now()
     let changed = false
-    const missing = []
     for (let i = 0; i < index.length; i++) {
       const body = await IMG_RECORDS_KV.get(recordKeyOf(safeIdOf(index[i].id)), { type: 'json' })
       if (!body) {
+        // 本体暂时读不到：宽限期内视为仍在（读写延迟），超时才判定已删除并从索引剔除
+        if (now - (Number(index[i].createdAt) || 0) < EVICT_GRACE_MS) continue
         // 本体已不存在（如被彻底删除）：从索引剔除
         index.splice(i, 1)
         i--
@@ -237,12 +243,14 @@ async function snapshot() {
         index[i] = { ...index[i], deletedAt: body.deletedAt }
         changed = true
       }
-      missing.push(body)
     }
     if (changed) await writeIndex(index)
     return index
   }
   const records = await listRecords()
+  // 全表扫描为空时不写空索引：KV.list 可能不可用（返回空≠真没数据），
+  // 固化空索引会把全部历史记录永久埋掉；后续写入路径会自行追加索引条目
+  if (records.length === 0) return []
   const rebuilt = buildIndex(records)
   await writeIndex(rebuilt)
   return rebuilt

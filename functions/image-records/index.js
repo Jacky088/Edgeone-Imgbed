@@ -55,10 +55,10 @@ async function upsertRecord(normalized) {
   return normalized
 }
 
-// 单条记录变更后同步索引（读改写；索引缺失时下次读取会自动重建）
+// 单条记录变更后同步索引（读改写；索引缺失时以空数组起步并写入，
+// 避免依赖"下次读取自动重建"——KV.list 不可用时该假设不成立，记录会被埋掉）
 async function updateIndex(normalized) {
-  const index = await readIndex()
-  if (!index) return
+  const index = (await readIndex()) || []
   const entry = {
     id: normalized.id,
     name: normalized.name,
@@ -95,9 +95,9 @@ export async function onRequest({ request, env }) {
       return json(429, '请求过于频繁，请稍后再试', null, 429)
     }
 
-    // 单次快照（索引优先，缺失回退扫描并重建）+ 惰性清理
-    async function records() {
-      const all = await snapshot()
+    // 单次快照（索引优先，缺失回退扫描并重建）+ 惰性清理；force 时跳过索引强制全表扫描
+    async function records(force = false) {
+      const all = await snapshot(force)
       return purgeExpired(all)
     }
 
@@ -135,11 +135,23 @@ export async function onRequest({ request, env }) {
     }
 
     if (request.method === 'GET') {
-      const all = await records()
+      // ?rebuild=1：跳过索引强制全表扫描重建（索引被误清/丢失时的恢复工具，
+      // 也是 KV.list 可用性的试金石——返回 0 条即平台不支持扫描，需另寻恢复手段）
+      const forceRebuild = url.searchParams.get('rebuild') === '1'
+      const all = await records(forceRebuild)
       // 默认只返回未删除记录；?trash=1 返回回收站
       const showTrash = url.searchParams.get('trash') === '1'
       const filtered = showTrash ? all.filter((r) => r.deletedAt) : all.filter((r) => !r.deletedAt)
       const stats = buildStats(all)
+
+      if (forceRebuild) {
+        const rebuilt = sortRecords(filtered, 'createdAt', 'desc')
+        return json(0, `索引已重建：有效 ${rebuilt.length} 条，回收站 ${stats.trashed} 条`, {
+          records: rebuilt,
+          total: rebuilt.length,
+          stats,
+        })
+      }
 
       // ?recent=N：只取最近 N 张（首页"最近上传"专用，避免全量下发）
       const recentParam = Number(url.searchParams.get('recent'))
@@ -184,16 +196,24 @@ export async function onRequest({ request, env }) {
         const invalid = items.findIndex((r) => !r?.id || !r?.url || !r?.createdAt)
         if (invalid >= 0) return json(1, `第 ${invalid + 1} 条记录缺少必要字段`, null, 400)
 
-        for (const raw of items) {
-          const normalized = normalizeRecord(raw)
+        const normalizedItems = items.map((raw) => normalizeRecord(raw))
+        for (const normalized of normalizedItems) {
           const safeId = safeIdOf(normalized.id)
           if (!safeId) return json(1, '无效的记录 ID', null, 400)
           await IMG_RECORDS_KV.put(recordKeyOf(safeId), JSON.stringify(normalized))
         }
-        // 全量重建索引：批量写本身就是一次大批变更，重建比逐条读改写更快且绝对一致
+        // 合并写入索引：旧快照 + 本次新记录。此前直接用写入前的旧快照重建，
+        // 新记录永远进不了索引（接口返回成功但列表不可见）——批量记录丢失的根因
         const all = await records()
-        const rebuilt = buildIndex(all)
-        await writeIndex(rebuilt)
+        const existingIds = new Set(all.map((r) => r.id))
+        const freshIds = new Set()
+        const fresh = buildIndex(normalizedItems).filter((e) => {
+          if (existingIds.has(e.id) || freshIds.has(e.id)) return false
+          freshIds.add(e.id)
+          return true
+        })
+        const merged = [...fresh, ...all].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+        await writeIndex(merged)
         return json(0, `已保存 ${items.length} 条记录`, { ok: items.length })
       }
 
@@ -225,7 +245,8 @@ export async function onRequest({ request, env }) {
       }
       if (ok > 0) {
         const all = await records()
-        await writeIndex(buildIndex(all))
+        // 扫描结果为空时不写空索引（KV.list 可能不可用，写空索引会埋掉全部历史记录）
+        if (all.length > 0) await writeIndex(buildIndex(all))
       }
       if (targets.length === 1) {
         return ok === 1 ? json(0, '已恢复', null) : json(1, '记录不存在', null, 404)
@@ -277,7 +298,8 @@ export async function onRequest({ request, env }) {
       }
       if (ok > 0) {
         const all = await records()
-        await writeIndex(buildIndex(all))
+        // 扫描结果为空时不写空索引（KV.list 可能不可用，写空索引会埋掉全部历史记录）
+        if (all.length > 0) await writeIndex(buildIndex(all))
       }
       return json(0, purge ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`, { ok, fail: targets.length - ok })
     }

@@ -1,6 +1,7 @@
 // KV 记录接口 _lib.js 纯函数测试（buildStats / sortRecords / buildIndex / purge 过滤 / 共享限流 / 孤儿路径归一化）
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { buildStats, sortRecords, buildIndex, isRateLimited, cnbImgPathOf, normalizeAssetPath } from '../functions/image-records/_lib.js'
+import { onRequest } from '../functions/image-records/index.js'
 
 const now = Date.now()
 const records = [
@@ -135,5 +136,131 @@ describe('cnbImgPathOf / normalizeAssetPath（孤儿扫描路径归一化）', (
   it('平台资产 path：空值返回 null', () => {
     expect(normalizeAssetPath('')).toBeNull()
     expect(normalizeAssetPath(null)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------- 接口集成测试
+// 直接驱动 onRequest（无 SITE_PASSWORD 时鉴权恒通过），复现并锁定
+// "批量上传返回成功但列表不可见"的索引丢失 bug 及其修复
+
+function makeFakeKV(initial: Record<string, string> = {}) {
+  const store = new Map<string, string>(Object.entries(initial))
+  return {
+    store,
+    // 与平台 KV 一致：type: 'json' 时返回解析后的对象
+    get: async (k: string, opts?: { type?: string }) => {
+      const v = store.get(k)
+      if (v === undefined || v === null) return null
+      return opts?.type === 'json' ? JSON.parse(v) : v
+    },
+    put: async (k: string, v: string) => {
+      store.set(k, String(v))
+    },
+    delete: async (k: string) => {
+      store.delete(k)
+    },
+    list: async ({ prefix, cursor, limit }: { prefix?: string; cursor?: string; limit?: number } = {}) => {
+      const all = [...store.keys()].filter((k) => k.startsWith(prefix || '')).sort()
+      let start = 0
+      if (cursor) start = all.indexOf(cursor) + 1
+      const page = all.slice(start, start + (limit || 256))
+      return {
+        keys: page.map((key) => ({ key })),
+        complete: start + page.length >= all.length,
+        cursor: page.at(-1)?.key,
+      }
+    },
+  }
+}
+
+let kv: ReturnType<typeof makeFakeKV> | null = null
+
+async function call(method: string, query = '', body?: unknown) {
+  const res = await onRequest({
+    request: new Request(`http://localhost/image-records${query}`, {
+      method,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }),
+    env: {},
+  })
+  return { status: res.status, data: await res.json() }
+}
+
+function rec(id: string, minsAgo = 0) {
+  return { id, name: `${id}.png`, url: `https://s.example/api/img/${id}.png`, size: 123, type: 'image/png', createdAt: Date.now() - minsAgo * 60000 }
+}
+
+describe('image-records 接口集成（模拟 KV）', () => {
+  beforeEach(() => {
+    kv = makeFakeKV()
+    ;(globalThis as any).IMG_RECORDS_KV = kv
+  })
+  afterEach(() => {
+    delete (globalThis as any).IMG_RECORDS_KV
+    kv = null
+  })
+
+  it('批量写入后新记录立即可见（核心回归：索引必须合并本次写入）', async () => {
+    const r1 = rec('batch1', 1)
+    const r2 = rec('batch2', 0)
+    const post = await call('POST', '', { records: [r1, r2] })
+    expect(post.status).toBe(200)
+    expect(post.data.code).toBe(0)
+
+    const get = await call('GET')
+    expect(get.data.data.map((r: any) => r.id)).toEqual(['batch2', 'batch1'])
+    // 索引已落盘且包含两条
+    const index = JSON.parse(kv!.store.get('image_records_index')!)
+    expect(index.map((r: any) => r.id)).toEqual(['batch2', 'batch1'])
+  })
+
+  it('批量重试幂等：同一批重复提交不会产生重复条目', async () => {
+    const r = rec('dup1')
+    await call('POST', '', { records: [r] })
+    await call('POST', '', { records: [r] })
+    const get = await call('GET')
+    expect(get.data.data).toHaveLength(1)
+  })
+
+  it('单条写入：索引缺失时也能创建并可见（不依赖全表扫描）', async () => {
+    // list 故障（恒返回空）：旧逻辑在索引缺失时依赖扫描重建，记录会被埋掉
+    ;(kv as any)!.list = async () => ({ keys: [], complete: true })
+    const post = await call('POST', '', rec('solo1'))
+    expect(post.data.code).toBe(0)
+    const get = await call('GET')
+    expect(get.data.data.map((r: any) => r.id)).toEqual(['solo1'])
+  })
+
+  it('?rebuild=1 强制全表扫描重建：无索引的历史记录可复活', async () => {
+    // 直接预置两条记录本体（模拟被埋掉的历史），不建索引
+    kv!.store.set('image_old1', JSON.stringify(rec('old1', 5)))
+    kv!.store.set('image_old2', JSON.stringify(rec('old2', 3)))
+    const before = await call('GET')
+    expect(before.data.data).toHaveLength(2) // 索引缺失 → 扫描回退，list 正常时直接可见
+
+    // 清掉扫描结果触发的索引，再验证 rebuild 强制路径
+    kv!.store.delete('image_records_index')
+    const rebuilt = await call('GET', '?rebuild=1')
+    expect(rebuilt.data.code).toBe(0)
+    expect(rebuilt.data.msg).toContain('索引已重建')
+    expect(rebuilt.data.data.total).toBe(2)
+    expect(kv!.store.has('image_records_index')).toBe(true)
+  })
+
+  it('扫描结果为空时不固化空索引（KV.list 不可用时不清空历史）', async () => {
+    // 预置索引 + 本体，然后让 list 故障且删掉索引 → 模拟"索引丢失 + list 不可用"
+    kv!.store.set('image_keep1', JSON.stringify(rec('keep1', 2)))
+    ;(kv as any)!.list = async () => ({ keys: [], complete: true })
+    const rebuilt = await call('GET', '?rebuild=1')
+    expect(rebuilt.data.data.total).toBe(0)
+    // 关键断言：不允许写空索引（否则后续记录永远无法通过扫描恢复）
+    expect(kv!.store.has('image_records_index')).toBe(false)
+  })
+
+  it('60 秒宽限期：刚写入的记录本体暂时读不到时仍保留在列表', async () => {
+    await call('POST', '', { records: [rec('grace1')] })
+    kv!.store.delete('image_grace1') // 模拟读写延迟：本体暂时不可见
+    const get = await call('GET')
+    expect(get.data.data.map((r: any) => r.id)).toEqual(['grace1'])
   })
 })
