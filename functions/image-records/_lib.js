@@ -82,22 +82,67 @@ function getClientIp(request) {
   return 'unknown'
 }
 
-// 命中限流返回 true；调用方按读写分桶计数
-function isRateLimited(bucket, maxRequests, windowMs = 60000) {
+// 命中限流返回 true；调用方按读写分桶计数。
+// 本地内存为第一层快路径，IMG_RECORDS_KV 为跨实例共享计数层（固定窗口）；
+// KV 未绑定或操作失败时自动降级为纯内存（尽力而为）。
+// 注入式转义：非 [a-zA-Z0-9] 字符 → _x{十六进制}x，满足 KV 键仅允许数字/字母/下划线
+// 的约束，且不同原始输入（如 IPv4 与 IPv6 片段）不碰撞
+function sanitizeLimitKey(input) {
+  return String(input).replace(/[^a-zA-Z0-9]/g, (ch) => `_x${ch.charCodeAt(0).toString(16)}x`)
+}
+
+function kvAvailable() {
+  return typeof IMG_RECORDS_KV !== 'undefined' && IMG_RECORDS_KV && typeof IMG_RECORDS_KV.get === 'function'
+}
+
+async function isRateLimited(bucket, maxRequests, windowMs = 60000) {
   const now = Date.now()
-  const record = rateLimitMap.get(bucket)
-  if (!record || now > record.resetTime) {
-    rateLimitMap.set(bucket, { count: 1, resetTime: now + windowMs })
-    if (rateLimitMap.size > 500) {
-      for (const [key, rec] of rateLimitMap) {
-        if (now > rec.resetTime) rateLimitMap.delete(key)
-      }
-    }
+  const windowId = Math.floor(now / windowMs)
+  const memKey = `${windowId}:${bucket}`
+
+  // 内存快路径：本实例已超限直接拒绝（内存计数只会比全局少，超限判定不会误放行）
+  const mem = rateLimitMap.get(memKey)
+  if (mem && now <= mem.resetTime && mem.count >= maxRequests) return true
+
+  if (!kvAvailable()) {
+    bumpMemory(memKey, windowMs, now)
     return false
   }
-  if (record.count >= maxRequests) return true
-  record.count++
-  return false
+
+  const kvKey = `rl${sanitizeLimitKey(bucket)}${windowId}`
+  try {
+    const raw = await IMG_RECORDS_KV.get(kvKey)
+    const count = Number(raw) || 0
+    if (count >= maxRequests) {
+      bumpMemory(memKey, windowMs, now)
+      return true
+    }
+    await IMG_RECORDS_KV.put(kvKey, String(count + 1))
+    bumpMemory(memKey, windowMs, now)
+    // 新窗口首次写入时顺手清理上一窗口的 key，避免 KV 中 rl 前缀键无限累积
+    if (count === 0) {
+      Promise.resolve(IMG_RECORDS_KV.delete(`rl${sanitizeLimitKey(bucket)}${windowId - 1}`)).catch(() => {})
+    }
+    return false
+  } catch {
+    // KV 不可用：降级为纯内存限流（尽力而为）
+    bumpMemory(memKey, windowMs, now)
+    return false
+  }
+}
+
+function bumpMemory(memKey, windowMs, now) {
+  const rec = rateLimitMap.get(memKey)
+  if (!rec || now > rec.resetTime) {
+    rateLimitMap.set(memKey, { count: 1, resetTime: now + windowMs })
+    if (rateLimitMap.size > 500) {
+      for (const [key, r] of rateLimitMap) {
+        if (now > r.resetTime) rateLimitMap.delete(key)
+      }
+    }
+    return
+  }
+  rec.count++
 }
 
 function safeIdOf(id) {
@@ -220,23 +265,31 @@ async function purgeExpired(records) {
 // ---------------------------------------------------------------- 统计 / 切片
 
 function buildStats(records) {
-  const active = records.filter((r) => !r.deletedAt)
   const byType = {}
   let totalSize = 0
+  let trashedSize = 0
+  let trashed = 0
   let todayCount = 0
   const dayStart = new Date()
   dayStart.setHours(0, 0, 0, 0)
   const dayStartTs = dayStart.getTime()
-  for (const r of active) {
+  for (const r of records) {
+    if (r.deletedAt) {
+      // 软删除记录的原图仍占用 CNB 存储（删除不落盘），单独暴露体积便于用户感知
+      trashed++
+      trashedSize += Number(r.size) || 0
+      continue
+    }
     const ext = (r.type || '').split('/')[1] || 'other'
     byType[ext] = (byType[ext] || 0) + 1
     totalSize += Number(r.size) || 0
     if (Number(r.createdAt) >= dayStartTs) todayCount++
   }
   return {
-    count: active.length,
+    count: records.length - trashed,
     totalSize,
-    trashed: records.length - active.length,
+    trashed,
+    trashedSize,
     todayCount,
     byType,
   }
@@ -251,6 +304,76 @@ function sortRecords(records, sortKey, sortDir) {
     return ((Number(a.createdAt) || 0) - (Number(b.createdAt) || 0)) * dir
   })
   return sorted
+}
+
+// ===== CNB 平台资产清单（孤儿文件扫描）=====
+// 官方接口 GET /{slug}/-/list-assets（分页，令牌需 repo-manage:r）。
+// 孤儿 = 平台清单中存在、但没有任何上传记录（含回收站）引用的 slug_img 资源。
+// 本模块只做读取对比；删除复用 node-functions 的 POST /api/file/delete-cnb
+// （DELETE /-/imgs/{imgPath}，令牌需 repo-manage:rw）。
+const CNB_LIST_PAGE_SIZE = 100
+const CNB_LIST_MAX_PAGES = 30 // 单次扫描上限 3000 个资产，超出标记 truncated
+const CNB_LIST_TIMEOUT_MS = 10000
+
+// 与 node-functions/api/_utils.ts 的 extractCnbImgPath 同规则：兼容 /api/img/ 与原生 -/imgs/、-/files/ 链接
+function cnbImgPathOf(recordUrl) {
+  const raw = String(recordUrl || '')
+  const markers = ['/api/img/', '-/imgs/', '-/files/']
+  for (const marker of markers) {
+    const idx = raw.indexOf(marker)
+    if (idx >= 0) {
+      const p = raw.slice(idx + marker.length).split(/[?#]/)[0]
+      if (p) return p
+    }
+  }
+  return null
+}
+
+// 平台资产的 path → imgPath（可能带 -/imgs/ 前缀，也可能已是裸路径）
+function normalizeAssetPath(assetPath) {
+  const raw = String(assetPath || '')
+  const idx = raw.indexOf('-/imgs/')
+  if (idx >= 0) {
+    const p = raw.slice(idx + '-/imgs/'.length).split(/[?#]/)[0]
+    return p || null
+  }
+  const p = raw.split(/[?#]/)[0]
+  return p || null
+}
+
+// 分页拉取仓库全部平台资产：{ ok, assets?, others?, truncated?, reason? }
+// 仅收集 slug_img（我们经 upload/imgs 上传的类型），其他类型计数后跳过
+async function listCnbImgAssets(env) {
+  const slug = env?.SLUG_IMG
+  const token = env?.TOKEN_IMG
+  if (!slug || !token) return { ok: false, reason: 'missing-env' }
+  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.cnb.api+json' }
+  const assets = []
+  let others = 0
+  try {
+    for (let page = 1; page <= CNB_LIST_MAX_PAGES; page++) {
+      const resp = await Promise.race([
+        fetch(`https://api.cnb.cool/${slug}/-/list-assets?page=${page}&page_size=${CNB_LIST_PAGE_SIZE}`, { headers }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), CNB_LIST_TIMEOUT_MS)),
+      ])
+      if (resp.status === 403) return { ok: false, reason: 'forbidden' }
+      if (!resp.ok) return { ok: false, reason: 'upstream' }
+      const list = await resp.json()
+      if (!Array.isArray(list)) return { ok: false, reason: 'upstream' }
+      for (const item of list) {
+        if (item?.record_type === 'slug_img') {
+          const path = normalizeAssetPath(item.path)
+          if (path) assets.push({ path, size: Number(item.size_in_byte) || 0, createdAt: String(item.created_at || '') })
+        } else {
+          others++
+        }
+      }
+      if (list.length < CNB_LIST_PAGE_SIZE) return { ok: true, assets, others, truncated: false }
+    }
+  } catch {
+    return { ok: false, reason: 'network' }
+  }
+  return { ok: true, assets, others, truncated: true }
 }
 
 export {
@@ -271,4 +394,7 @@ export {
   purgeExpired,
   buildStats,
   sortRecords,
+  cnbImgPathOf,
+  normalizeAssetPath,
+  listCnbImgAssets,
 }

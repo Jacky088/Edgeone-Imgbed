@@ -15,20 +15,21 @@ import {
 } from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import BucketBadge from '@/components/BucketBadge.vue'
-import { useUploadSettings } from '@/composables/useUploadSettings'
 import { useGlobalStats } from '@/composables/useGlobalStats'
+import { useStorageUsage } from '@/composables/useStorageUsage'
 import { useBucket } from '@/composables/useBucket'
 import { formatCompactSize } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
-const { settings } = useUploadSettings()
 // 全站统计与桶名由 AppShell 统一拉取：所有页面侧栏/顶栏一致，无需各页面传入
-const { stats, fetchStats } = useGlobalStats()
+const { fetchStats } = useGlobalStats()
+const { status: usageState, data: usageData, errorMsg: usageError, fetchUsage } = useStorageUsage()
 const { fetchBucket } = useBucket()
 onMounted(() => {
   fetchStats()
   fetchBucket()
+  fetchUsage()
 })
 
 // 回收站是图片列表的一种视图（/admin?view=trash），但作为一级导航项单独露出
@@ -56,9 +57,21 @@ const pageTitle = computed(() => {
   return menu.value.find((item) => item.active)?.label || 'CNB图床'
 })
 
-// 侧栏存储卡：已用 / 配额占比（以 useUploadSettings.storageQuotaGB 为总额基准）
-const usedBytes = computed(() => stats.value?.totalSize ?? 0)
-const quotaBytes = computed(() => settings.value.storageQuotaGB * 1024 * 1024 * 1024)
+// 侧栏存储卡：全部来自 CNB 官方接口实测，无浏览器端手动配额。
+// 占用 = 本仓库图片总量之和（slug_img 资产汇总）；配额 = 组织存储总额度（对象存储 + git）。
+// 读取失败时显示错误提示，可点击重试（refresh=1 绕过服务端 10 分钟缓存）。
+const usedBytes = computed(() => {
+  const u = usageData.value
+  if (!u) return 0
+  return u.images?.usedBytes ?? u.object.usedBytes + u.git.usedBytes
+})
+const usedCount = computed(() => usageData.value?.images?.count ?? null)
+const quotaBytes = computed(() => {
+  const u = usageData.value
+  if (!u) return 0
+  return (u.object.quotaBytes ?? 0) + (u.git.quotaBytes ?? 0)
+})
+const quotaLabel = computed(() => (quotaBytes.value > 0 ? formatCompactSize(quotaBytes.value) : '未知'))
 const quotaPct = computed(() =>
   quotaBytes.value > 0 ? Math.min(100, Math.round((usedBytes.value / quotaBytes.value) * 100)) : 0,
 )
@@ -203,23 +216,64 @@ const handleLogout = () => {
           </div>
         </div>
 
-        <!-- 存储卡：与目标图一致的图标 + 数字 + 进度条 + 百分比 -->
+        <!-- 存储卡：数据全部来自 CNB 官方接口（图片总量 = slug_img 资产汇总；配额 = 组织总额度） -->
         <div class="card p-5">
           <div class="flex items-center gap-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
             <Database class="h-4 w-4 text-gray-400 dark:text-gray-500" />
             存储空间
+            <span
+              v-if="usageState === 'ok'"
+              title="占用为 CNB 仓库图片总量之和，配额为 CNB 组织存储额度"
+              class="ml-auto rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300"
+            >
+              实测
+            </span>
           </div>
-          <p class="mt-1.5 text-center text-[15px] font-bold tabular-nums text-gray-900 dark:text-white">
-            <template v-if="stats">{{ formatCompactSize(usedBytes) }} <span class="font-semibold text-gray-400 dark:text-gray-500">/ {{ settings.storageQuotaGB }} GB</span></template>
-            <template v-else>配额 {{ settings.storageQuotaGB }} GB</template>
-          </p>
-          <div class="mt-2 h-[7px] overflow-hidden rounded-full bg-indigo-50 dark:bg-gray-800" role="progressbar" :aria-valuenow="quotaPct" aria-valuemin="0" aria-valuemax="100" :aria-label="`存储已用 ${quotaPct}%`">
+
+          <!-- 读取成功：图片总量 / 组织配额 -->
+          <template v-if="usageState === 'ok'">
+            <p class="mt-1.5 text-center text-[15px] font-bold tabular-nums text-gray-900 dark:text-white">
+              {{ formatCompactSize(usedBytes) }}
+              <span class="font-semibold text-gray-400 dark:text-gray-500">/ {{ quotaLabel }}</span>
+            </p>
+            <p v-if="usedCount !== null" class="mt-0.5 text-center text-[11px] font-semibold text-gray-400 dark:text-gray-500">
+              共 {{ usedCount }} 张图片
+            </p>
+            <p
+              v-if="usageData?.images === null"
+              class="mt-1 text-center text-[11px] font-semibold text-amber-600 dark:text-amber-400"
+              :title="usageError || '访问令牌缺少 repo-manage:r 权限'"
+            >
+              图片总量不可读，已改用组织用量
+            </p>
+          </template>
+
+          <!-- 读取失败：错误提示 + 点击重试（refresh=1 绕过服务端缓存） -->
+          <button
+            v-else-if="usageState === 'error'"
+            @click="fetchUsage(true)"
+            class="mt-1.5 block w-full text-center text-xs font-semibold text-red-500 transition-colors hover:text-red-600 dark:text-red-400"
+            :title="usageError"
+          >
+            {{ usageError }}，点击重试
+          </button>
+          <p v-else class="mt-1.5 text-center text-[15px] font-bold text-gray-300 dark:text-gray-600">读取中…</p>
+
+          <div
+            v-if="usageState === 'ok'"
+            class="mt-2 h-[7px] overflow-hidden rounded-full bg-indigo-50 dark:bg-gray-800"
+            role="progressbar"
+            :aria-valuenow="quotaPct"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="`存储已用 ${quotaPct}%`"
+          >
             <div
               class="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
               :style="{ width: `${quotaPct}%` }"
             />
           </div>
-          <p class="mt-1 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
+          <p v-if="usageState === 'ok'" class="mt-1 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
             {{ quotaPct }}%
           </p>
         </div>

@@ -22,8 +22,6 @@ export interface UploadSettings {
   autoCopy: boolean
   /** 图片列表每页条数 */
   pageSize: number
-  /** 存储空间配额（GB），侧栏存储卡按此计算占比 */
-  storageQuotaGB: number
 }
 
 const STORAGE_KEY = 'upload_settings'
@@ -38,7 +36,6 @@ const DEFAULTS: UploadSettings = {
   defaultCopyFormat: 'url',
   autoCopy: false,
   pageSize: 20,
-  storageQuotaGB: 10,
 }
 
 export const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
@@ -60,12 +57,6 @@ function clampPageSize(value: unknown): number {
   return PAGE_SIZE_OPTIONS.includes(n) ? n : DEFAULTS.pageSize
 }
 
-function clampStorageQuotaGB(value: unknown): number {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n <= 0) return DEFAULTS.storageQuotaGB
-  return Math.min(100000, Math.round(n * 100) / 100)
-}
-
 function load(): UploadSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -80,7 +71,6 @@ function load(): UploadSettings {
       defaultCopyFormat: parsed.defaultCopyFormat === 'markdown' || parsed.defaultCopyFormat === 'html' || parsed.defaultCopyFormat === 'bbcode' ? parsed.defaultCopyFormat : 'url',
       autoCopy: parsed.autoCopy === true,
       pageSize: clampPageSize(parsed.pageSize),
-      storageQuotaGB: clampStorageQuotaGB(parsed.storageQuotaGB),
     }
   } catch {
     return { ...DEFAULTS }

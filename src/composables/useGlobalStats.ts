@@ -7,6 +7,7 @@ export interface GlobalStats {
   count: number
   totalSize: number
   trashed: number
+  trashedSize?: number
   todayCount?: number
 }
 

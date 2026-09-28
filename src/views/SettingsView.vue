@@ -1,13 +1,87 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Settings, RotateCcw, Images, Copy, Ruler, FileText, Rows3, Type, Database } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import axios from '@/utils/axios'
+import { Settings, RotateCcw, Images, Copy, Ruler, FileText, Rows3, Type, SearchCode, Trash2 } from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import AppShell from '@/components/layout/AppShell.vue'
 import { useUploadSettings, PAGE_SIZE_OPTIONS, type CopyFormat, type NamingRule } from '@/composables/useUploadSettings'
+import { useStorageUsage } from '@/composables/useStorageUsage'
+import { formatCompactSize } from '@/utils/format'
 import { toast } from 'vue-sonner'
 
 // 上传压缩为浏览器端 WebP 管线，仅调整参数，不改变上传接口行为
 const { settings, resetSettings } = useUploadSettings()
+// 孤儿清理成功后强制刷新侧栏存储卡（refresh=1 绕过服务端 10 分钟缓存）
+const { fetchUsage } = useStorageUsage()
+
+// ===== CNB 孤儿文件扫描（平台资产清单 vs 上传记录）=====
+interface OrphanAsset {
+  path: string
+  size: number
+  createdAt: string
+}
+const scanState = ref<'idle' | 'scanning' | 'done' | 'error'>('idle')
+const scanMsg = ref('')
+const scanMeta = ref<{ scanned: number; otherTypes: number; truncated: boolean } | null>(null)
+const orphans = ref<OrphanAsset[]>([])
+const orphanPurging = ref(false)
+
+const orphanTotalSize = computed(() => orphans.value.reduce((sum, o) => sum + (o.size || 0), 0))
+
+// 扫描只读不删：孤儿 = CNB 平台清单里存在、但没有任何记录（含回收站）引用的图片
+const scanOrphans = async () => {
+  if (scanState.value === 'scanning') return
+  scanState.value = 'scanning'
+  scanMsg.value = ''
+  try {
+    const { data } = await axios.get('/image-records/cnb-assets', { baseURL: '' })
+    if (data.code === 0) {
+      orphans.value = data.data?.orphans || []
+      scanMeta.value = {
+        scanned: data.data?.scanned || 0,
+        otherTypes: data.data?.otherTypes || 0,
+        truncated: !!(data.data?.truncated || data.data?.orphansTruncated),
+      }
+      scanState.value = 'done'
+    } else {
+      scanMsg.value = data.msg || '扫描失败'
+      scanState.value = 'error'
+    }
+  } catch (e: unknown) {
+    const resp = (e as { response?: { data?: { msg?: string } } })?.response
+    scanMsg.value = resp?.data?.msg || '扫描失败，请稍后重试'
+    scanState.value = 'error'
+  }
+}
+
+// 清理走 node 端删除接口（paths 直传，单次 ≤50 自动分批），删除前二次确认
+const purgeOrphans = async () => {
+  if (orphanPurging.value || orphans.value.length === 0) return
+  if (!window.confirm(`将永久删除 CNB 上的 ${orphans.value.length} 个孤儿文件，不可恢复。确定继续？`)) return
+  orphanPurging.value = true
+  let failed = 0
+  try {
+    for (let i = 0; i < orphans.value.length; i += 50) {
+      const paths = orphans.value.slice(i, i + 50).map((o) => o.path)
+      try {
+        // node 端点：走 axios 默认 baseURL /api
+        const { data } = await axios.post('/file/delete-cnb', { paths })
+        if (data.code === 0) failed += (data.data?.failed || []).length
+        else failed += paths.length
+      } catch {
+        failed += paths.length
+      }
+    }
+    const okCount = orphans.value.length - failed
+    if (failed === 0) toast.success(`已清理 ${okCount} 个孤儿文件`)
+    else toast.warning(`已清理 ${okCount} 个，${failed} 个删除失败（可重新扫描后重试）`)
+    // 同步刷新：孤儿已删除，立即更新侧栏存储卡的图片总量与占用
+    await fetchUsage(true)
+    await scanOrphans()
+  } finally {
+    orphanPurging.value = false
+  }
+}
 
 const qualityOptions = [
   { value: 0.5, label: '0.5', hint: '最小' },
@@ -265,40 +339,82 @@ const handleReset = () => {
         </div>
       </div>
 
-      <!-- 存储配额 -->
+      <!-- 孤儿文件扫描：CNB 平台资产清单 vs 上传记录对比 -->
       <div class="card p-6">
-        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div class="flex items-start gap-3">
-            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
-              <Database class="h-5 w-5" />
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-500 dark:bg-amber-900/30 dark:text-amber-400">
+              <SearchCode class="h-5 w-5" />
             </div>
             <div class="min-w-0">
-              <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">存储配额</p>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">侧栏存储卡按此计算占比（GB，仅本机显示用）</p>
+              <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">孤儿文件扫描</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                对比 CNB 平台资产清单与上传记录（含回收站），找出仓库中已无记录引用的图片；只读不删，清理前二次确认
+              </p>
             </div>
           </div>
           <div class="flex shrink-0 items-center gap-2">
-            <input
-              v-model.number="settings.storageQuotaGB"
-              type="number"
-              min="1"
-              max="100000"
-              step="1"
-              class="h-9 w-24 rounded-xl border border-gray-200 bg-white px-3 text-sm font-bold tabular-nums text-gray-900 outline-none transition-all focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-            />
-            <span class="text-xs font-semibold text-gray-500 dark:text-gray-400">GB</span>
             <button
-              v-for="n in [10, 50, 100]"
-              :key="n"
-              @click="settings.storageQuotaGB = n"
-              class="h-9 rounded-xl px-3 text-xs font-bold transition-all"
+              @click="scanOrphans"
+              :disabled="scanState === 'scanning'"
+              class="flex h-9 items-center gap-1.5 rounded-xl px-4 text-xs font-bold transition-all disabled:cursor-not-allowed disabled:opacity-60"
               :class="
-                settings.storageQuotaGB === n
-                  ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                scanState === 'scanning'
+                  ? 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500'
+                  : 'brand-gradient text-white shadow-md shadow-indigo-500/25 hover:opacity-90'
               "
             >
-              {{ n }}
+              {{ scanState === 'scanning' ? '扫描中…' : '扫描' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 扫描失败 -->
+        <p v-if="scanState === 'error'" class="mt-3 text-xs font-semibold text-red-500 dark:text-red-400">
+          {{ scanMsg }}
+        </p>
+
+        <!-- 扫描结果 -->
+        <div v-if="scanState === 'done'" class="mt-4">
+          <p class="text-xs font-semibold text-gray-600 dark:text-gray-300">
+            已扫描 {{ scanMeta?.scanned || 0 }} 个平台资产
+            <template v-if="scanMeta?.otherTypes">
+              （{{ scanMeta.otherTypes }} 个非图片附件不计入）
+            </template>
+            ，发现
+            <span :class="orphans.length > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'">
+              {{ orphans.length }} 个孤儿文件
+            </span>
+            <template v-if="orphans.length > 0">，共 {{ formatCompactSize(orphanTotalSize) }}</template>
+          </p>
+          <p v-if="scanMeta?.truncated" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+            资产数量超过单次扫描上限，结果可能不完整，可多次执行清理后重新扫描
+          </p>
+
+          <div
+            v-if="orphans.length > 0"
+            class="mt-3 max-h-48 overflow-y-auto rounded-xl border border-gray-100 bg-gray-50/60 p-2 dark:border-gray-800 dark:bg-gray-800/40"
+          >
+            <div
+              v-for="orphan in orphans"
+              :key="orphan.path"
+              class="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800/80"
+            >
+              <span class="min-w-0 flex-1 truncate text-gray-600 dark:text-gray-300" :title="orphan.path">
+                {{ orphan.path }}
+              </span>
+              <span class="shrink-0 tabular-nums text-gray-400 dark:text-gray-500">{{ formatCompactSize(orphan.size) }}</span>
+            </div>
+          </div>
+
+          <div v-if="orphans.length > 0" class="mt-3 flex justify-end">
+            <button
+              @click="purgeOrphans"
+              :disabled="orphanPurging"
+              class="flex h-9 items-center gap-1.5 rounded-xl bg-red-500 px-4 text-xs font-bold text-white shadow-md shadow-red-500/20 transition-all hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Trash2 class="h-3.5 w-3.5" />
+              {{ orphanPurging ? '清理中…' : `清理全部孤儿文件` }}
             </button>
           </div>
         </div>

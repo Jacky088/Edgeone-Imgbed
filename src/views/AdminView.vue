@@ -29,6 +29,7 @@ import {
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { buildFormats } from '@/utils/formatLinks'
+import { formatCompactSize } from '@/utils/format'
 import { copyTextFallback } from '@/utils/clipboard'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 import { flushPendingRecords } from '@/utils/pendingRecords'
@@ -61,7 +62,7 @@ const trashMode = computed({
     router.replace({ path: '/admin', query: val ? { view: 'trash' } : {} })
   },
 })
-const stats = ref<{ count: number; totalSize: number; trashed: number } | null>(null)
+const stats = ref<{ count: number; totalSize: number; trashed: number; trashedSize?: number } | null>(null)
 
 // 前端搜索 + 类型筛选 + 大小筛选 + 排序 + 分页（数据已整表拉取，不再额外请求）
 const keyword = ref('')
@@ -216,6 +217,13 @@ const formatDate = (ts: number) => {
 const { stats: globalStats } = useGlobalStats()
 const syncGlobalStats = () => { if (stats.value) globalStats.value = stats.value }
 
+// 回收站页头提示：删除仅移除记录，软删除原图仍占用 CNB 存储，暴露体积让用户可感知
+const trashFootprintText = computed(() => {
+  const base = '30 天后自动清除，可在此恢复'
+  const size = stats.value?.trashedSize ?? 0
+  return size > 0 ? `原图仍占用 CNB 存储 ${formatCompactSize(size)}，${base}` : base
+})
+
 // 列表与统计一次请求拿全（KV 侧单次全表扫描 + ?stats=1 顺带统计）；quiet 静默刷新，不闪骨架屏
 const fetchList = async (quiet = false) => {
   if (!quiet) loading.value = true
@@ -331,7 +339,31 @@ const onKeydown = (e: KeyboardEvent) => {
   }
 }
 
-// 单条删除：正常列表软删除进回收站，回收站里彻底删除
+// 联动删除 CNB 源文件（彻底删除后调用）：尽力而为，失败只留下孤儿文件，不影响记录删除
+// 服务端单次上限 50 个 URL，超出自动分批
+const purgeCnbFiles = async (
+  items: ImageRecord[],
+): Promise<{ failed: number; unreachable: boolean }> => {
+  const urls = items.flatMap((i) => [i.url, i.thumbnailUrl]).filter((u): u is string => !!u)
+  if (urls.length === 0) return { failed: 0, unreachable: false }
+  let failed = 0
+  for (let i = 0; i < urls.length; i += 50) {
+    try {
+      // node 端点：走 axios 默认 baseURL /api（不可传 baseURL:''，否则命中站点根路径 404）
+      const { data } = await axios.post('/file/delete-cnb', { urls: urls.slice(i, i + 50) })
+      if (data.code === 0) {
+        failed += (data.data?.failed || []).length
+      } else {
+        return { failed, unreachable: true }
+      }
+    } catch {
+      return { failed, unreachable: true }
+    }
+  }
+  return { failed, unreachable: false }
+}
+
+// 单条删除：正常列表软删除进回收站，回收站里彻底删除（并联动删除 CNB 源文件）
 const softDelete = async (item: ImageRecord) => {
   if (deleting.value) return
   deleting.value = true
@@ -342,7 +374,16 @@ const softDelete = async (item: ImageRecord) => {
     })
     if (data.code === 0) {
       list.value = list.value.filter((row) => row.id !== item.id)
-      toast.success(trashMode.value ? '已彻底删除' : '已移入回收站，30 天内可恢复')
+      if (trashMode.value) {
+        const cnb = await purgeCnbFiles([item])
+        if (!cnb.unreachable && cnb.failed === 0) {
+          toast.success('已彻底删除（含 CNB 源文件）')
+        } else {
+          toast.warning('记录已彻底删除；部分 CNB 源文件删除失败')
+        }
+      } else {
+        toast.success('已移入回收站，30 天内可恢复')
+      }
       fetchList(true)
     } else {
       toast.error(data.msg)
@@ -469,8 +510,16 @@ const handleBatchDelete = async () => {
       fetchList(true)
       const ok = data.data?.ok ?? snapshot.length
       const fail = data.data?.fail ?? 0
-      if (fail === 0) {
-        toast.success(trashMode.value ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`)
+      if (fail === 0 && trashMode.value) {
+        // 彻底删除成功后联动删除 CNB 源文件（尽力而为）
+        const cnb = await purgeCnbFiles(snapshot)
+        if (!cnb.unreachable && cnb.failed === 0) {
+          toast.success(`已彻底删除 ${ok} 条记录（含 CNB 源文件）`)
+        } else {
+          toast.warning(`已删除 ${ok} 条记录；部分 CNB 源文件删除失败`)
+        }
+      } else if (fail === 0) {
+        toast.success(`已删除 ${ok} 条记录`)
       } else {
         toast.warning(`${ok} 条删除成功，${fail} 条失败`)
       }
@@ -549,7 +598,7 @@ onUnmounted(() => {
         <div>
           <h2 class="text-xl font-bold text-gray-900 sm:text-2xl dark:text-white">{{ trashMode ? '回收站' : '图片列表' }}</h2>
           <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            {{ trashMode ? '30 天后自动清除，可在此恢复' : '管理和浏览您上传的所有图片' }}
+            {{ trashMode ? trashFootprintText : '管理和浏览您上传的所有图片' }}
           </p>
         </div>
       </div>
@@ -1247,7 +1296,7 @@ onUnmounted(() => {
         <AlertCircle class="h-5 w-5 shrink-0 mt-0.5" />
         <p>
           {{ trashMode
-            ? '回收站中的记录保留 30 天后自动清除；彻底删除不会物理删除 CNB 上的图片文件。'
+            ? '回收站中的记录保留 30 天后自动清除（自动清除仅移除记录，不删 CNB 源文件）；手动彻底删除会同步删除 CNB 上的图片文件，删除失败时仅移除记录。'
             : '删除仅移除 EdgeOne KV 中的链接记录并进入回收站（30 天），不会物理删除 CNB 上的图片文件。' }}
         </p>
       </div>

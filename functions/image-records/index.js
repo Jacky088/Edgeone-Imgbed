@@ -14,6 +14,8 @@ import {
   snapshot,
   purgeExpired,
   sortRecords,
+  cnbImgPathOf,
+  listCnbImgAssets,
 } from './_lib.js'
 
 // 每条记录落盘的最简形状（拒绝非法/多余字段，宽高在此持久化）
@@ -86,10 +88,10 @@ export async function onRequest({ request, env }) {
 
     // 写操作更严格；批量写单独放宽（一次请求写多条，请求数反而更少）
     if (request.method !== 'GET') {
-      if (isRateLimited(`write:${ip}`, 120)) {
+      if (await isRateLimited(`write:${ip}`, 120)) {
         return json(429, '请求过于频繁，请稍后再试', null, 429)
       }
-    } else if (isRateLimited(`read:${ip}`, 120)) {
+    } else if (await isRateLimited(`read:${ip}`, 120)) {
       return json(429, '请求过于频繁，请稍后再试', null, 429)
     }
 
@@ -103,6 +105,37 @@ export async function onRequest({ request, env }) {
     if (request.method === 'GET' && url.pathname.endsWith('/stats')) {
       const all = await records()
       return json(0, '获取成功', buildStats(all))
+    }
+
+    // CNB 孤儿文件扫描：平台资产清单 vs 全部上传记录（含回收站）对比，只读不删
+    if (request.method === 'GET' && url.pathname.endsWith('/cnb-assets')) {
+      const listed = await listCnbImgAssets(env)
+      if (!listed.ok) {
+        const msgs = {
+          'missing-env': '缺少 SLUG_IMG 或 TOKEN_IMG 配置',
+          forbidden: '访问令牌缺少 repo-manage:r 权限',
+          upstream: 'CNB 资产接口返回异常',
+          network: 'CNB 资产接口连接失败',
+        }
+        return json(1, msgs[listed.reason] || 'CNB 资产接口不可用', null, listed.reason === 'forbidden' ? 403 : 502)
+      }
+      // 引用集 = 全部记录（含回收站，软删除的图仍可能被恢复）的主图 + 缩略图 imgPath
+      const all = await records()
+      const referenced = new Set()
+      for (const record of all) {
+        for (const u of [record.url, record.thumbnailUrl]) {
+          const p = cnbImgPathOf(u)
+          if (p) referenced.add(p)
+        }
+      }
+      const orphans = listed.assets.filter((asset) => !referenced.has(asset.path))
+      return json(0, '获取成功', {
+        scanned: listed.assets.length + listed.others,
+        otherTypes: listed.others,
+        orphans: orphans.slice(0, 1000),
+        orphansTruncated: orphans.length > 1000,
+        truncated: listed.truncated,
+      })
     }
 
     if (request.method === 'GET') {

@@ -10,11 +10,13 @@ import {
   fixMulterFilename,
   sanitizeFilename,
   buildPublicUrl,
+  fetchCnbStorageUsage,
+  deleteFromCnb,
   MAX_UPLOAD_MB,
   UPLOAD_RATE_LIMIT,
   ALLOWED_MIMES,
 } from './_utils'
-import { authMiddleware, rateLimiter, securityHeaders } from './_middleware'
+import { authMiddleware, rateLimiter, sharedRateLimiter, securityHeaders } from './_middleware'
 
 const upload = multer({
   limits: {
@@ -36,7 +38,7 @@ const requestConfig = {
   timeout: 5000,
   headers: {
     Accept: 'image/*, */*',
-    'User-Agent': 'Edgeone-Imgbed/1.4 (+https://github.com/Jacky088/Edgeone-Imgbed)',
+    'User-Agent': 'Edgeone-Imgbed/1.5.0 (+https://github.com/Jacky088/Edgeone-Imgbed)',
   },
 }
 const BASE_URL = 'https://cnb.cool/' + process.env.SLUG_IMG + '/-/imgs/'
@@ -80,11 +82,11 @@ app.get('/auth/status', (_req: any, res: any) => {
   res.json(reply(0, '获取成功', { passwordEnabled: !!process.env.SITE_PASSWORD }))
 })
 
-// 身份验证接口（每分钟最多 5 次尝试，防止密码暴力破解）
+// 身份验证接口（每分钟最多 5 次尝试，防止密码暴力破解；共享限流跨实例生效）
 app.post(
   '/auth/verify',
   // 每分钟最多 5 次尝试，防止密码暴力破解
-  rateLimiter(5, 60000),
+  sharedRateLimiter(5, 60000),
   (req, res) => {
   const { password, remember } = req.body
   // 获取环境变量中的密码
@@ -105,7 +107,7 @@ app.post(
 
 app.post(
   '/upload/img',
-  rateLimiter(UPLOAD_RATE_LIMIT, 60000), // 上传限流可配（UPLOAD_RATE_LIMIT，默认 120/分钟，覆盖批量上传场景）
+  sharedRateLimiter(UPLOAD_RATE_LIMIT, 60000), // 上传限流可配（UPLOAD_RATE_LIMIT，默认 120/分钟，覆盖批量上传场景；跨实例共享计数）
   authMiddleware, // 添加身份验证
   upload.fields([
     { name: 'file', maxCount: 1 },
@@ -185,7 +187,7 @@ app.post(
 // Authorization: Basic base64(api:<PICGO_TOKEN>)，PICGO_TOKEN 为环境变量
 app.post(
   '/upload/picgo',
-  rateLimiter(UPLOAD_RATE_LIMIT, 60000),
+  sharedRateLimiter(UPLOAD_RATE_LIMIT, 60000),
   (req, res, next) => {
     const picgoToken = process.env.PICGO_TOKEN
     if (!picgoToken) {
@@ -246,6 +248,47 @@ app.get('/config', authMiddleware, (_req: any, res: any) => {
     maxUploadMb: MAX_UPLOAD_MB,
   }))
 })
+
+// CNB 真实容量探测：组织用量/额度（Charge API）。
+// 令牌无 group-resource:r 权限或上游异常时返回 available:false，前端按回退逻辑展示，不当作错误
+app.get(
+  '/storage/usage',
+  authMiddleware,
+  rateLimiter(30, 60000),
+  async (req: any, res: any) => {
+    // refresh=1 绕过 10 分钟缓存（孤儿清理后立即刷新）
+    const result = await fetchCnbStorageUsage(req.query?.refresh === '1')
+    if (!result.available) {
+      return res.json(reply(0, 'CNB 容量接口不可用', { available: false, reason: result.reason || 'unknown' }))
+    }
+    res.json(reply(0, '获取成功', { available: true, ...result.data }))
+  },
+)
+
+// 彻底删除时联动删除 CNB 源文件：前端传记录 URL（主图+缩略图），服务端提取 imgPath 后调用
+// CNB 删除接口（需令牌具备 repo-manage:rw 权限）。尽力而为：删除失败不影响记录已删除的事实
+app.post(
+  '/file/delete-cnb',
+  authMiddleware,
+  rateLimiter(30, 60000),
+  async (req: any, res: any) => {
+    // urls：记录链接（服务端提取 imgPath）；paths：直传 imgPath（孤儿文件清理）
+    const urls = Array.isArray(req.body?.urls)
+      ? req.body.urls.filter((u: unknown) => typeof u === 'string')
+      : []
+    const paths = Array.isArray(req.body?.paths)
+      ? req.body.paths.filter((p: unknown) => typeof p === 'string')
+      : []
+    if (urls.length === 0 && paths.length === 0) {
+      return res.status(400).json(reply(1, '缺少 urls 或 paths 参数', null))
+    }
+    if (urls.length + paths.length > 50) {
+      return res.status(400).json(reply(1, '单次最多删除 50 个文件', null))
+    }
+    const result = await deleteFromCnb(urls, paths)
+    res.json(reply(0, '处理完成', result))
+  },
+)
 
 // 未知 /api 路由兜底：统一返回 JSON（code/msg/data 约定），避免 Express 默认 HTML 404
 // 注意：新增路由必须注册在这两个中间件之前，否则会被 404 兜底吞掉

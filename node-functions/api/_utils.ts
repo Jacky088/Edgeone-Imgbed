@@ -129,7 +129,11 @@ async function uploadToCnb({
     throw new Error('Failed to get upload metadata')
   }
 
-  const { assets, upload_url } = await metaResp.json()
+  const meta = (await metaResp.json()) as { assets?: Record<string, string>; upload_url?: string }
+  const { assets, upload_url } = meta
+  if (!assets?.path || !upload_url) {
+    throw new Error('CNB upload metadata response is missing assets/upload_url')
+  }
 
   const uploadResp = await fetch(upload_url, {
     method: 'PUT',
@@ -143,6 +147,118 @@ async function uploadToCnb({
   }
 
   return { assets, url: assets['path'] }
+}
+
+// ===== CNB 容量探测（Charge API + 资产清单）=====
+// 存储卡数据全部来自 CNB 官方接口，不再使用浏览器端手动配额：
+//   - 图片总量：GET /{slug}/-/list-assets 分页汇总 slug_img 资产的 size_in_byte（需 repo-manage:r）
+//   - 用量/额度：GET /{slug}/-/charge/volume、/-/charge/quota（需 group-resource:r）
+// 进程内缓存 10 分钟；refresh=1 绕过缓存（孤儿清理后立即刷新）。
+// 图片清单不可读（缺 repo-manage:r）时 images 为 null，用量/额度不受影响。
+export interface CnbStorageUsage {
+  /** 本仓库图片总量（slug_img 资产 size_in_byte 之和）；清单不可读时为 null */
+  images: { count: number; usedBytes: number; truncated?: boolean } | null
+  /** 图片清单读取失败原因（images 为 null 时有值） */
+  imagesReason?: string
+  /** 组织对象存储用量/额度（含 git lfs、制品、附件） */
+  object: { usedBytes: number; quotaBytes: number | null; freeBytes: number | null }
+  /** 组织 git 存储用量/额度（不含 lfs） */
+  git: { usedBytes: number; quotaBytes: number | null; freeBytes: number | null }
+}
+
+const STORAGE_CACHE_TTL_MS = 10 * 60 * 1000
+const CNB_ASSETS_PAGE_SIZE = 100
+const CNB_ASSETS_MAX_PAGES = 30 // 单次汇总上限 3000 个资产，超出标记 truncated
+let storageCache: { at: number; data: CnbStorageUsage } | null = null
+
+/** 分页汇总仓库图片总量；失败返回 { ok:false }（独立降级，不阻塞用量/额度展示） */
+async function sumCnbImageAssets(
+  slug: string,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<{ ok: boolean; reason?: string; count?: number; usedBytes?: number; truncated?: boolean }> {
+  let count = 0
+  let usedBytes = 0
+  try {
+    for (let page = 1; page <= CNB_ASSETS_MAX_PAGES; page++) {
+      const resp = await fetch(
+        `https://api.cnb.cool/${slug}/-/list-assets?page=${page}&page_size=${CNB_ASSETS_PAGE_SIZE}`,
+        { headers, signal },
+      )
+      if (resp.status === 403) return { ok: false, reason: 'images-forbidden' }
+      if (!resp.ok) return { ok: false, reason: 'upstream' }
+      const list = (await resp.json()) as Array<{ record_type?: string; size_in_byte?: number }>
+      if (!Array.isArray(list)) return { ok: false, reason: 'upstream' }
+      for (const item of list) {
+        if (item.record_type === 'slug_img') {
+          count++
+          usedBytes += Number(item.size_in_byte) || 0
+        }
+      }
+      if (list.length < CNB_ASSETS_PAGE_SIZE) {
+        return { ok: true, count, usedBytes, truncated: false }
+      }
+    }
+  } catch {
+    return { ok: false, reason: 'network' }
+  }
+  return { ok: true, count, usedBytes, truncated: true }
+}
+
+async function fetchCnbStorageUsage(refresh = false): Promise<{ available: boolean; reason?: string; data?: CnbStorageUsage }> {
+  // 数据变化缓慢，进程内缓存 10 分钟；refresh=1 绕过（孤儿清理后立即刷新）
+  if (!refresh && storageCache && Date.now() - storageCache.at < STORAGE_CACHE_TTL_MS) {
+    return { available: true, data: storageCache.data }
+  }
+  const slug = process.env.SLUG_IMG
+  const token = process.env.TOKEN_IMG
+  if (!slug || !token) return { available: false, reason: 'missing-env' }
+
+  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+  const signal = AbortSignal.timeout(CNB_TIMEOUT_MS)
+  try {
+    const [volumeResp, quotaResp] = await Promise.all([
+      fetch(`https://api.cnb.cool/${slug}/-/charge/volume`, { headers, signal }),
+      fetch(`https://api.cnb.cool/${slug}/-/charge/quota`, { headers, signal }),
+    ])
+
+    if (volumeResp.status === 403 || quotaResp.status === 403) {
+      return { available: false, reason: 'forbidden' }
+    }
+    if (!volumeResp.ok || !quotaResp.ok) {
+      return { available: false, reason: 'upstream' }
+    }
+
+    const volume = (await volumeResp.json()) as Record<string, unknown>
+    const quota = (await quotaResp.json()) as {
+      git_in_byte?: { free?: number; total?: number }
+      object_in_byte?: { free?: number; total?: number }
+    }
+
+    // 图片总量：独立降级（令牌缺 repo-manage:r 时不影响额度展示）
+    const assets = await sumCnbImageAssets(slug, headers, signal)
+
+    const data: CnbStorageUsage = {
+      images: assets.ok
+        ? { count: assets.count || 0, usedBytes: assets.usedBytes || 0, truncated: assets.truncated }
+        : null,
+      imagesReason: assets.ok ? undefined : assets.reason,
+      object: {
+        usedBytes: Number(volume.object_in_byte) || 0,
+        quotaBytes: quota.object_in_byte?.total ?? null,
+        freeBytes: quota.object_in_byte?.free ?? null,
+      },
+      git: {
+        usedBytes: Number(volume.git_in_byte) || 0,
+        quotaBytes: quota.git_in_byte?.total ?? null,
+        freeBytes: quota.git_in_byte?.free ?? null,
+      },
+    }
+    storageCache = { at: Date.now(), data }
+    return { available: true, data }
+  } catch {
+    return { available: false, reason: 'network' }
+  }
 }
 
 /**
@@ -327,4 +443,70 @@ function buildPublicUrl(cnbPath: string): string {
 /** 上传侧允许的 MIME 类型（与前端 allowedTypes 一致） */
 const ALLOWED_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 
-export { proxyImageRequest as createProxyHandler, uploadToCnb, signAuthToken, verifyAuthToken, detectImageMime, securePasswordCompare, extractImagePath, fixMulterFilename, sanitizeFilename, buildPublicUrl, MAX_UPLOAD_MB, UPLOAD_RATE_LIMIT, ALLOWED_MIMES }
+// ===== CNB 源文件删除（与彻底删除联动）=====
+// 官方接口 DELETE /{repo}/-/imgs/{imgPath}（删除 UploadImgs 上传的图片），
+// 需访问令牌具备 repo-manage:rw 权限。删除是尽力而为：失败只影响源文件（成为孤儿），
+// 不影响记录删除流程。404 视为成功（文件本就不存在）。
+
+/** imgPath 白名单：Unicode 字母数字 + ._-/；禁止路径遍历与反斜杠 */
+function isValidImgPath(p: string): boolean {
+  if (!p || p.length > 512) return false
+  if (p.startsWith('/') || p.includes('\\') || p.includes('..')) return false
+  return /^[\p{L}\p{N}._\-/]+$/u.test(p)
+}
+
+/** 从记录 URL 提取 CNB imgPath：兼容 /api/img/ 代理链接与原生 -/imgs/、-/files/ 链接 */
+function extractCnbImgPath(recordUrl: string): string | null {
+  const markers = ['/api/img/', '-/imgs/', '-/files/']
+  for (const marker of markers) {
+    const idx = recordUrl.indexOf(marker)
+    if (idx >= 0) {
+      const p = recordUrl.slice(idx + marker.length).split(/[?#]/)[0]
+      if (p) return p
+    }
+  }
+  return null
+}
+
+/** 批量删除 CNB 源文件：urls（自动提取 imgPath）与 paths（直传 imgPath）合并后去重并发删除 */
+async function deleteFromCnb(urls: string[], paths: string[] = []): Promise<{ ok: string[]; failed: string[]; skipped: number }> {
+  const ok: string[] = []
+  const failed: string[] = []
+  let skipped = 0
+  const slug = process.env.SLUG_IMG
+  const token = process.env.TOKEN_IMG
+  if (!slug || !token) return { ok, failed, skipped: urls.length + paths.length }
+
+  const seen = new Set<string>()
+  const targets: string[] = []
+  const addTarget = (imgPath: string | null) => {
+    if (!imgPath || !isValidImgPath(imgPath) || seen.has(imgPath)) {
+      skipped++
+      return
+    }
+    seen.add(imgPath)
+    targets.push(imgPath)
+  }
+  for (const url of urls) addTarget(extractCnbImgPath(url || ''))
+  for (const path of paths) addTarget(typeof path === 'string' ? path : null)
+
+  await Promise.all(
+    targets.map(async (imgPath) => {
+      const encoded = imgPath.split('/').map(encodeURIComponent).join('/')
+      try {
+        const resp = await fetch(`https://api.cnb.cool/${slug}/-/imgs/${encoded}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(CNB_TIMEOUT_MS),
+        })
+        if (resp.ok || resp.status === 404) ok.push(imgPath)
+        else failed.push(imgPath)
+      } catch {
+        failed.push(imgPath)
+      }
+    }),
+  )
+  return { ok, failed, skipped }
+}
+
+export { proxyImageRequest as createProxyHandler, uploadToCnb, signAuthToken, verifyAuthToken, detectImageMime, securePasswordCompare, extractImagePath, fixMulterFilename, sanitizeFilename, buildPublicUrl, fetchCnbStorageUsage, deleteFromCnb, isValidImgPath, extractCnbImgPath, MAX_UPLOAD_MB, UPLOAD_RATE_LIMIT, ALLOWED_MIMES }
