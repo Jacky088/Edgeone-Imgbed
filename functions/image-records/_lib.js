@@ -358,7 +358,8 @@ async function listCnbImgAssets(env) {
       ])
       if (resp.status === 403) return { ok: false, reason: 'forbidden' }
       if (!resp.ok) return { ok: false, reason: 'upstream' }
-      const list = await resp.json()
+      // CNB 空仓库返回字面量 null 而非 []，需兜底
+      const list = (await resp.json()) || []
       if (!Array.isArray(list)) return { ok: false, reason: 'upstream' }
       for (const item of list) {
         if (item?.record_type === 'slug_img') {

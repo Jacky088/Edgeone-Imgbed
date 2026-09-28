@@ -34,7 +34,8 @@ const scanOrphans = async () => {
   scanState.value = 'scanning'
   scanMsg.value = ''
   try {
-    const { data } = await axios.get('/image-records/cnb-assets', { baseURL: '' })
+    // 边缘函数按文件路由，必须走基础路径 + 查询参数（子路径会落到 SPA 兜底返回 HTML）
+    const { data } = await axios.get('/image-records', { baseURL: '', params: { 'cnb-assets': 1 } })
     if (data.code === 0) {
       orphans.value = data.data?.orphans || []
       scanMeta.value = {

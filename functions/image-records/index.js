@@ -101,14 +101,9 @@ export async function onRequest({ request, env }) {
       return purgeExpired(all)
     }
 
-    // 统计：总数 / 总大小 / 类型分布
-    if (request.method === 'GET' && url.pathname.endsWith('/stats')) {
-      const all = await records()
-      return json(0, '获取成功', buildStats(all))
-    }
-
-    // CNB 孤儿文件扫描：平台资产清单 vs 全部上传记录（含回收站）对比，只读不删
-    if (request.method === 'GET' && url.pathname.endsWith('/cnb-assets')) {
+    // CNB 孤儿文件扫描：?cnb-assets=1（边缘函数按文件路由，子路径不会进入本文件，
+    // 必须走基础路径 + 查询参数，与 ?stats=1 / ?trash=1 同模式）；只读不删
+    if (request.method === 'GET' && url.searchParams.get('cnb-assets') === '1') {
       const listed = await listCnbImgAssets(env)
       if (!listed.ok) {
         const msgs = {
@@ -117,7 +112,7 @@ export async function onRequest({ request, env }) {
           upstream: 'CNB 资产接口返回异常',
           network: 'CNB 资产接口连接失败',
         }
-        // 注意：用 200 + code:1 返回失败，让具体原因直达前端；非 2xx 会被 axios 抛异常吞掉原因
+        // 200 + code:1 让具体原因直达前端；非 2xx 会被 axios 抛异常吞掉原因
         return json(1, msgs[listed.reason] || 'CNB 资产接口不可用', null)
       }
       // 引用集 = 全部记录（含回收站，软删除的图仍可能被恢复）的主图 + 缩略图 imgPath
