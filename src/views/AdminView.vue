@@ -26,6 +26,9 @@ import {
   RefreshCw,
   SlidersHorizontal,
   MoreHorizontal,
+  CheckSquare,
+  Check,
+  ZoomIn,
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { buildFormats } from '@/utils/formatLinks'
@@ -334,8 +337,10 @@ const onKeydown = (e: KeyboardEvent) => {
     lightboxItem.value = null
   } else if (showShortcuts.value) {
     showShortcuts.value = false
-  } else {
+  } else if (showDeleteDialog.value) {
     closeDeleteDialog()
+  } else if (selectMode.value) {
+    exitSelectMode()
   }
 }
 
@@ -467,7 +472,109 @@ const toggleSelect = (id: string) => {
   selectionVersion.value++
 }
 
-// 网格视图的多选入口是卡片 checkbox + 顶部批量下拉，此处保留底层选中态即可
+// 相册式选择模式：checkbox 常显、点卡片即选中（预览走卡片右上角按钮 / 列表行缩略图）
+const selectMode = ref(false)
+const exitSelectMode = () => {
+  selectMode.value = false
+  shiftAnchorId.value = null // 保留已选项，用户可在浏览模式继续用批量菜单操作
+}
+
+// 全选 / 取消全选（作用于当前筛选+排序后的完整列表，跨分页生效）
+const allSelected = computed(() => {
+  void selectionVersion.value
+  return filteredList.value.length > 0 && filteredList.value.every((item) => selectedIds.value.has(item.id))
+})
+
+const toggleSelectAll = () => {
+  if (allSelected.value) {
+    for (const item of filteredList.value) selectedIds.value.delete(item.id)
+  } else {
+    for (const item of filteredList.value) selectedIds.value.add(item.id)
+  }
+  selectionVersion.value++
+}
+
+// Shift+点击范围选择：从上次点击项到本次点击项之间全部选中（桌面效率核心）
+const shiftAnchorId = ref<string | null>(null)
+
+const handleSelectClick = (item: ImageRecord, e: { shiftKey: boolean }) => {
+  if (e.shiftKey && shiftAnchorId.value && shiftAnchorId.value !== item.id) {
+    const ids = filteredList.value.map((r) => r.id)
+    const a = ids.indexOf(shiftAnchorId.value)
+    const b = ids.indexOf(item.id)
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a]
+      for (let i = lo; i <= hi; i++) {
+        const id = ids[i]
+        if (id) selectedIds.value.add(id)
+      }
+      selectionVersion.value++
+      return
+    }
+  }
+  toggleSelect(item.id)
+  shiftAnchorId.value = item.id
+}
+
+// 选择模式下缩略图点击 = 切换选中；浏览模式 = 打开大图预览
+const onThumbClick = (item: ImageRecord, e: MouseEvent) => {
+  if (selectMode.value) {
+    handleSelectClick(item, e)
+    return
+  }
+  lightboxItem.value = item
+}
+
+// 移动端长按卡片进入选择模式（相册习惯）；滚动位移超阈值视为滚动并取消
+const LONG_PRESS_MS = 500
+let pressTimer: number | null = null
+let pressStart = { x: 0, y: 0 }
+let longPressFired = false
+
+const onThumbTouchStart = (item: ImageRecord, e: TouchEvent) => {
+  if (selectMode.value) return
+  const t = e.touches[0]
+  if (!t) return
+  pressStart = { x: t.clientX, y: t.clientY }
+  longPressFired = false
+  pressTimer = window.setTimeout(() => {
+    pressTimer = null
+    longPressFired = true
+    selectMode.value = true
+    toggleSelect(item.id)
+    shiftAnchorId.value = item.id
+    navigator.vibrate?.(15) // 触觉反馈，支持的设备生效
+  }, LONG_PRESS_MS)
+}
+
+const onThumbTouchMove = (e: TouchEvent) => {
+  if (!pressTimer) return
+  const t = e.touches[0]
+  if (!t) return
+  const dx = t.clientX - pressStart.x
+  const dy = t.clientY - pressStart.y
+  if (dx * dx + dy * dy > 12 * 12) {
+    clearTimeout(pressTimer)
+    pressTimer = null
+  }
+}
+
+const onThumbTouchEnd = (e: TouchEvent) => {
+  if (pressTimer) {
+    clearTimeout(pressTimer)
+    pressTimer = null
+    return
+  }
+  // 长按已触发：阻止合成 click（否则会立刻把刚选中的卡片又切换掉）
+  if (longPressFired) {
+    e.preventDefault()
+    longPressFired = false
+  }
+}
+
+onUnmounted(() => {
+  if (pressTimer) clearTimeout(pressTimer)
+})
 
 // 读取 selectionVersion 驱动 computed 更新（Set 内部变更不触发响应式）
 const selectedList = computed(() => {
@@ -624,6 +731,25 @@ onUnmounted(() => {
               <X class="h-4 w-4" />
             </button>
           </div>
+          <!-- 批量选择模式入口：选择模式下变为「完成」 -->
+          <button
+            v-if="!selectMode"
+            @click="selectMode = true"
+            class="flex h-10 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
+            title="进入批量选择（移动端也可长按图片）"
+          >
+            <CheckSquare class="h-3.5 w-3.5" />
+            <span class="hidden sm:inline">批量选择</span>
+          </button>
+          <button
+            v-else
+            @click="exitSelectMode"
+            class="flex h-10 items-center gap-1.5 rounded-xl bg-indigo-600 px-3 text-xs font-semibold text-white shadow-sm shadow-indigo-500/30 transition-colors hover:bg-indigo-500"
+            title="退出批量选择（Esc）"
+          >
+            <Check class="h-3.5 w-3.5" />
+            完成
+          </button>
           <!-- 批量操作下拉 -->
           <div class="relative">
             <button
@@ -839,16 +965,27 @@ onUnmounted(() => {
         leave-to-class="opacity-0 -translate-y-2"
       >
         <div
-          v-if="selectedList.length > 0"
+          v-if="selectMode || selectedList.length > 0"
           class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-indigo-200/60 bg-indigo-50/70 px-5 py-3 dark:border-indigo-500/20 dark:bg-indigo-900/20"
         >
           <p class="text-sm font-semibold text-indigo-700 dark:text-indigo-300">
-            已选 <span class="font-bold">{{ selectedList.length }}</span> 项
-            <button @click="clearSelection" class="ml-2 text-xs font-medium text-gray-500 underline-offset-2 hover:underline dark:text-gray-400">
+            已选 <span class="font-bold">{{ selectedList.length }}</span>{{ selectMode ? ` / ${filteredList.length} 张` : ' 项' }}
+            <button
+              v-if="selectMode"
+              @click="toggleSelectAll"
+              class="ml-2 rounded-md bg-white px-2 py-1 text-xs font-semibold text-indigo-600 ring-1 ring-indigo-200 transition-colors hover:bg-indigo-100 dark:bg-gray-800 dark:text-indigo-300 dark:ring-indigo-500/30 dark:hover:bg-indigo-900/40"
+            >
+              {{ allSelected ? '取消全选' : '全选' }}
+            </button>
+            <button
+              v-else
+              @click="clearSelection"
+              class="ml-2 text-xs font-medium text-gray-500 underline-offset-2 hover:underline dark:text-gray-400"
+            >
               取消选择
             </button>
           </p>
-          <div class="flex flex-wrap items-center gap-2">
+          <div v-if="selectedList.length > 0" class="flex flex-wrap items-center gap-2">
             <template v-if="!trashMode">
               <button
                 @click="copySelected('url')"
@@ -937,44 +1074,66 @@ onUnmounted(() => {
             ]"
           >
             <!-- 缩略图区：hover 露出 checkbox + … 菜单；左下格式 badge；右下快捷复制 -->
-            <div class="relative aspect-[4/3] overflow-hidden bg-gray-100 dark:bg-gray-800">
-              <button
-                @click="lightboxItem = item"
-                class="block h-full w-full cursor-zoom-in"
-                title="点击查看大图"
-              >
-                <img
-                  :src="item.thumbnailUrl || item.url"
-                  :alt="item.name"
-                  loading="lazy"
-                  decoding="async"
-                  class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                />
-              </button>
-              <!-- 左上：多选 checkbox（hover/已选时显示） -->
-              <label
-                class="absolute left-2.5 top-2.5 flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg bg-white/90 shadow-sm backdrop-blur transition-opacity dark:bg-gray-900/80"
-                :class="isSelected(item.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'"
-                @click.stop
-              >
-                <input
-                  type="checkbox"
-                  :checked="isSelected(item.id)"
-                  @change="toggleSelect(item.id)"
-                  class="h-4 w-4 cursor-pointer accent-indigo-600"
-                  title="选择此项"
-                />
-              </label>
-              <!-- 右上：… 更多菜单 -->
-              <div class="absolute right-2.5 top-2.5">
+              <div class="relative aspect-[4/3] overflow-hidden bg-gray-100 dark:bg-gray-800">
                 <button
-                  @click.stop="openMenuId = openMenuId === item.id ? null : item.id"
-                  class="flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 text-gray-500 shadow-sm backdrop-blur transition-all hover:text-gray-800 dark:bg-gray-900/80 dark:text-gray-400 dark:hover:text-gray-100"
-                  :class="openMenuId === item.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
-                  title="更多操作"
+                  @click="onThumbClick(item, $event)"
+                  @touchstart="onThumbTouchStart(item, $event)"
+                  @touchmove="onThumbTouchMove"
+                  @touchend="onThumbTouchEnd"
+                  @contextmenu.prevent
+                  class="block h-full w-full"
+                  :class="selectMode ? 'cursor-pointer' : 'cursor-zoom-in'"
+                  :title="selectMode ? '点击选择' : '点击查看大图'"
                 >
-                  <MoreHorizontal class="h-4 w-4" />
+                  <img
+                    :src="item.thumbnailUrl || item.url"
+                    :alt="item.name"
+                    loading="lazy"
+                    decoding="async"
+                    class="h-full w-full select-none object-cover transition-transform duration-300 group-hover:scale-105"
+                  />
                 </button>
+                <!-- 左上：多选指示器（浏览模式 hover 露出的 checkbox / 选择模式常显指示器） -->
+                <label
+                  v-if="!selectMode"
+                  class="absolute left-2.5 top-2.5 flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg bg-white/90 shadow-sm backdrop-blur transition-opacity dark:bg-gray-900/80"
+                  :class="isSelected(item.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'"
+                  @click.stop
+                >
+                  <input
+                    type="checkbox"
+                    :checked="isSelected(item.id)"
+                    @change="toggleSelect(item.id)"
+                    class="h-4 w-4 cursor-pointer accent-indigo-600"
+                    title="选择此项"
+                  />
+                </label>
+                <div
+                  v-else
+                  class="absolute left-2.5 top-2.5 flex h-7 w-7 items-center justify-center rounded-lg shadow-sm backdrop-blur transition-all"
+                  :class="isSelected(item.id) ? 'bg-indigo-600 text-white' : 'border-2 border-white/90 bg-white/70 dark:border-gray-300/70 dark:bg-gray-900/50'"
+                >
+                  <Check v-if="isSelected(item.id)" class="h-4 w-4" />
+                </div>
+                <!-- 右上：选择模式为预览按钮；浏览模式为 … 更多菜单 -->
+                <div class="absolute right-2.5 top-2.5">
+                  <button
+                    v-if="selectMode"
+                    @click.stop="lightboxItem = item"
+                    class="flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 text-gray-500 shadow-sm backdrop-blur transition-all hover:text-gray-800 dark:bg-gray-900/80 dark:text-gray-400 dark:hover:text-gray-100"
+                    title="预览大图"
+                  >
+                    <ZoomIn class="h-4 w-4" />
+                  </button>
+                  <template v-else>
+                    <button
+                    @click.stop="openMenuId = openMenuId === item.id ? null : item.id"
+                    class="flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 text-gray-500 shadow-sm backdrop-blur transition-all hover:text-gray-800 dark:bg-gray-900/80 dark:text-gray-400 dark:hover:text-gray-100"
+                    :class="openMenuId === item.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+                    title="更多操作"
+                  >
+                    <MoreHorizontal class="h-4 w-4" />
+                  </button>
                 <Transition
                   enter-active-class="transition duration-150 ease-out"
                   enter-from-class="opacity-0 -translate-y-1"
@@ -1031,6 +1190,7 @@ onUnmounted(() => {
                     </button>
                   </div>
                 </Transition>
+                  </template>
               </div>
               <!-- 左下：格式 badge -->
               <span class="absolute bottom-2.5 left-2.5 rounded-md bg-black/45 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white backdrop-blur-sm">
@@ -1176,19 +1336,24 @@ onUnmounted(() => {
               <input
                 type="checkbox"
                 :checked="isSelected(item.id)"
-                @change="toggleSelect(item.id)"
+                @click.prevent="handleSelectClick(item, $event)"
                 class="h-4 w-4 shrink-0 cursor-pointer accent-indigo-600"
-                title="选择此项"
+                title="选择此项（按住 Shift 点击可范围选择）"
               />
-              <!-- 缩略图 -->
+              <!-- 缩略图：选择模式下点击=选中（支持 Shift 范围），浏览模式查看大图 -->
               <button
-                @click="lightboxItem = item"
-                class="h-14 w-14 shrink-0 cursor-zoom-in overflow-hidden rounded-xl border border-gray-200 bg-white p-1 shadow-sm transition-shadow hover:shadow-md dark:border-gray-700 dark:bg-gray-800"
-                title="点击查看大图"
+                @click="onThumbClick(item, $event)"
+                @touchstart="onThumbTouchStart(item, $event)"
+                @touchmove="onThumbTouchMove"
+                @touchend="onThumbTouchEnd"
+                @contextmenu.prevent
+                class="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-gray-200 bg-white p-1 shadow-sm transition-shadow hover:shadow-md dark:border-gray-700 dark:bg-gray-800"
+                :class="selectMode ? 'cursor-pointer' : 'cursor-zoom-in'"
+                :title="selectMode ? '点击选择' : '点击查看大图'"
               >
                 <img
                   :src="item.thumbnailUrl || item.url"
-                  class="h-full w-full rounded-lg object-cover"
+                  class="h-full w-full select-none rounded-lg object-cover"
                   alt="preview"
                   loading="lazy"
                   decoding="async"
