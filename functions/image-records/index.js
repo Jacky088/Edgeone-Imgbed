@@ -307,6 +307,8 @@ export async function onRequest({ request, env }) {
     return json(405, '不支持的请求方法', null, 405)
   } catch (error) {
     console.error('KV operation failed:', error)
-    return json(1, 'KV 存储操作失败，请检查命名空间绑定', null, 500)
+    // 真实原因直达前端：笼统的"绑定丢失"提示会掩盖代码异常，无法在线诊断
+    const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    return json(1, `操作失败: ${reason}`, null, 500)
   }
 }
