@@ -206,7 +206,9 @@ async function sumCnbImageAssets(
   return { ok: true, count, usedBytes, truncated: true }
 }
 
-async function fetchCnbStorageUsage(refresh = false): Promise<{ available: boolean; reason?: string; data?: CnbStorageUsage }> {
+async function fetchCnbStorageUsage(
+  refresh = false,
+): Promise<{ available: boolean; reason?: string; detail?: string; data?: CnbStorageUsage }> {
   // 数据变化缓慢，进程内缓存 10 分钟；refresh=1 绕过（孤儿清理后立即刷新）
   if (!refresh && storageCache && Date.now() - storageCache.at < STORAGE_CACHE_TTL_MS) {
     return { available: true, data: storageCache.data }
@@ -227,7 +229,9 @@ async function fetchCnbStorageUsage(refresh = false): Promise<{ available: boole
       return { available: false, reason: 'forbidden' }
     }
     if (!volumeResp.ok || !quotaResp.ok) {
-      return { available: false, reason: 'upstream' }
+      // 带上真实状态码便于诊断（401=令牌无效/被撤销、404=接口不存在、5xx=CNB 故障）
+      const status = !volumeResp.ok ? volumeResp.status : quotaResp.status
+      return { available: false, reason: 'upstream', detail: `HTTP ${status}` }
     }
 
     const volume = (await volumeResp.json()) as Record<string, unknown>

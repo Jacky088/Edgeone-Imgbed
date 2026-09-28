@@ -43,7 +43,9 @@ export function useStorageUsage() {
         data.value = resp.data as CnbStorageUsage
         status.value = 'ok'
       } else {
-        errorMsg.value = REASON_MSG[resp?.data?.reason] || resp?.msg || 'CNB 容量接口不可用'
+        const base = REASON_MSG[resp?.data?.reason] || resp?.msg || 'CNB 容量接口不可用'
+        // detail 为后端附加的诊断信息（如 CNB 真实 HTTP 状态码）
+        errorMsg.value = resp?.data?.detail ? `${base}（${resp.data.detail}）` : base
         status.value = 'error'
       }
     } catch {

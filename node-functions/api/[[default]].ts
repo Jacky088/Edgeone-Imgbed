@@ -259,7 +259,13 @@ app.get(
     // refresh=1 绕过 10 分钟缓存（孤儿清理后立即刷新）
     const result = await fetchCnbStorageUsage(req.query?.refresh === '1')
     if (!result.available) {
-      return res.json(reply(0, 'CNB 容量接口不可用', { available: false, reason: result.reason || 'unknown' }))
+      return res.json(
+        reply(0, 'CNB 容量接口不可用', {
+          available: false,
+          reason: result.reason || 'unknown',
+          detail: result.detail,
+        }),
+      )
     }
     res.json(reply(0, '获取成功', { available: true, ...result.data }))
   },
