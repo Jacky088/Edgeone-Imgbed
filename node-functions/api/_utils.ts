@@ -151,8 +151,9 @@ async function uploadToCnb({
 
 // ===== CNB 容量探测（Charge API + 资产清单）=====
 // 存储卡数据全部来自 CNB 官方接口，不再使用浏览器端手动配额：
-//   - 图片总量：GET /{slug}/-/list-assets 分页汇总 slug_img 资产的 size_in_byte（需 repo-manage:r）
-//   - 用量/额度：GET /{slug}/-/charge/volume、/-/charge/quota（需 group-resource:r）
+//   - 图片总量：GET /{仓库}/-/list-assets 分页汇总 slug_img 资产的 size_in_byte（需 repo-manage:r）
+//   - 用量/额度：GET /{组织}/-/charge/volume、/-/charge/quota（需 group-resource:r）
+//     注意 charge 是组织级接口：仓库路径会 404 Resource not found，须用组织 slug（SLUG_IMG 首段）
 // 进程内缓存 10 分钟；refresh=1 绕过缓存（孤儿清理后立即刷新）。
 // 图片清单不可读（缺 repo-manage:r）时 images 为 null，用量/额度不受影响。
 export interface CnbStorageUsage {
@@ -220,9 +221,11 @@ async function fetchCnbStorageUsage(
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
   const signal = AbortSignal.timeout(CNB_TIMEOUT_MS)
   try {
+    // charge 是组织级接口：仓库路径 404，须取 SLUG_IMG 首段作为组织 slug
+    const groupSlug = slug.split('/')[0]
     const [volumeResp, quotaResp] = await Promise.all([
-      fetch(`https://api.cnb.cool/${slug}/-/charge/volume`, { headers, signal }),
-      fetch(`https://api.cnb.cool/${slug}/-/charge/quota`, { headers, signal }),
+      fetch(`https://api.cnb.cool/${groupSlug}/-/charge/volume`, { headers, signal }),
+      fetch(`https://api.cnb.cool/${groupSlug}/-/charge/quota`, { headers, signal }),
     ])
 
     if (volumeResp.status === 403 || quotaResp.status === 403) {

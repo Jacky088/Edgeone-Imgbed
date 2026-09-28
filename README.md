@@ -174,7 +174,7 @@ Blob 存储不可用时限流自动降级为单实例内存计数（尽力而为
 | --- | --- | --- |
 | `repo-code:rw` | 仓库代码读写 | 上传图片（基础必需，`upload/imgs`） |
 | `repo-manage:rw` | 仓库管理读写（**包含只读能力**） | 图片总量统计与孤儿扫描（`list-assets`，最低 `:r`）；删除源文件与孤儿清理（`DELETE /-/imgs/{imgPath}`，需 `:rw`） |
-| `group-resource:r` | 组织资源只读 | 存储卡用量与配额实测（`charge/volume`、`charge/quota`） |
+| `group-resource:r` | 组织资源只读 | 存储卡用量与配额实测（`/{组织}/-/charge/*`，注意为组织级接口，服务端自动从 `SLUG_IMG` 取组织段调用） |
 
 > `repo-manage` 的 `:r` / `:rw` 是同一权限的两档（只读 / 读写），勾选 `:rw` 即同时获得 `:r` 能力，无需重复勾选；
 > 表中拆开仅表示对应功能的**最低**权限要求——若只想开启扫描/统计而不授权删除，可单独勾 `repo-manage:r`。
