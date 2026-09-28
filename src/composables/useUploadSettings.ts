@@ -26,13 +26,13 @@ export interface UploadSettings {
 
 const STORAGE_KEY = 'upload_settings'
 
-// 默认值：与历史硬编码参数保持一致
+// 默认值：命名默认时间戳，避免同名文件相互覆盖
 const DEFAULTS: UploadSettings = {
   quality: 0.7,
   generateThumbnail: true,
   keepOriginal: false,
   maxDimension: 0,
-  namingRule: 'original',
+  namingRule: 'timestamp',
   defaultCopyFormat: 'url',
   autoCopy: false,
   pageSize: 20,
@@ -67,7 +67,7 @@ function load(): UploadSettings {
       generateThumbnail: parsed.generateThumbnail !== false,
       keepOriginal: parsed.keepOriginal === true,
       maxDimension: clampMaxDimension(parsed.maxDimension),
-      namingRule: parsed.namingRule === 'timestamp' || parsed.namingRule === 'random' ? parsed.namingRule : 'original',
+      namingRule: parsed.namingRule === 'original' || parsed.namingRule === 'random' ? parsed.namingRule : 'timestamp',
       defaultCopyFormat: parsed.defaultCopyFormat === 'markdown' || parsed.defaultCopyFormat === 'html' || parsed.defaultCopyFormat === 'bbcode' ? parsed.defaultCopyFormat : 'url',
       autoCopy: parsed.autoCopy === true,
       pageSize: clampPageSize(parsed.pageSize),

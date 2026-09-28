@@ -28,6 +28,25 @@ const orphanPurging = ref(false)
 
 const orphanTotalSize = computed(() => orphans.value.reduce((sum, o) => sum + (o.size || 0), 0))
 
+// 展示与图片列表一致的卡片网格；缩略图(_thumb.webp)与主图同生共死，主图已在列表时隐藏避免重复卡片
+const displayOrphans = computed(() =>
+  orphans.value.filter((o) => {
+    if (!/_thumb\.webp$/.test(o.path)) return true
+    const main = o.path.replace(/_thumb\.webp$/, '')
+    return !orphans.value.some((x) => x.path === main)
+  }),
+)
+const hiddenThumbCount = computed(() => orphans.value.length - displayOrphans.value.length)
+
+// 代理同源输出（/api/img 白名单与上传扩展名一致），点击新窗口查看原图
+const orphanUrl = (o: OrphanAsset) => `/api/img/${o.path}`
+const orphanName = (o: OrphanAsset) => o.path.split('/').pop() || o.path
+const orphanExt = (o: OrphanAsset) => (orphanName(o).split('.').pop() || 'img').toLowerCase()
+const orphanDate = (o: OrphanAsset) => {
+  const t = Date.parse(o.createdAt || '')
+  return Number.isFinite(t) ? new Date(t).toLocaleDateString() : '—'
+}
+
 // 扫描只读不删：孤儿 = CNB 平台清单里存在、但没有任何记录（含回收站）引用的图片
 const scanOrphans = async () => {
   if (scanState.value === 'scanning') return
@@ -93,8 +112,16 @@ const qualityOptions = [
   { value: 0.9, label: '0.9', hint: '最清晰' },
 ]
 
-const activeHint = computed(
-  () => qualityOptions.find((q) => q.value === settings.value.quality)?.hint || '自定义',
+// 「原始」= 不压缩、不转换，保持原始格式与大小；选择质量档位即代表开启压缩
+const pickQuality = (q: number) => {
+  settings.value.keepOriginal = false
+  settings.value.quality = q
+}
+
+const currentModeText = computed(() =>
+  settings.value.keepOriginal
+    ? '原始（不压缩不转换）'
+    : `${settings.value.quality}（${qualityOptions.find((q) => q.value === settings.value.quality)?.hint || '自定义'}）`,
 )
 
 const maxDimensionOptions = [
@@ -107,7 +134,7 @@ const maxDimensionOptions = [
 
 const namingOptions: Array<{ value: NamingRule; label: string; hint: string }> = [
   { value: 'original', label: '保留原名', hint: '同名可能覆盖' },
-  { value: 'timestamp', label: '时间戳', hint: '如 20260905-153001' },
+  { value: 'timestamp', label: '时间戳', hint: '默认 · 防同名覆盖' },
   { value: 'random', label: '随机 ID', hint: '短随机字符' },
 ]
 
@@ -135,23 +162,39 @@ const handleReset = () => {
         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">上传压缩与外观偏好（保存在本机浏览器）</p>
       </div>
 
-      <!-- 压缩质量 -->
+      <!-- 压缩模式：原始 / 质量档位 -->
       <div class="card p-6">
         <div class="flex flex-col gap-5">
           <div>
-            <p class="text-sm font-bold text-gray-900 dark:text-white">图片压缩质量</p>
+            <p class="text-sm font-bold text-gray-900 dark:text-white">图片压缩</p>
             <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-              上传时自动转为 WebP，质量越低体积越小。当前：{{ settings.quality }}（{{ activeHint }}）
+              压缩时自动转为 WebP，质量越低体积越小；「原始」不压缩、不转换，保持原始格式和大小。
+              当前：{{ currentModeText }}（GIF 动图始终保留以维持动画）
             </p>
           </div>
           <div class="flex flex-wrap gap-2">
             <button
-              v-for="q in qualityOptions"
-              :key="q.value"
-              @click="settings.quality = q.value"
+              @click="settings.keepOriginal = true"
               class="flex min-w-[64px] flex-col items-center rounded-xl px-3 py-2 text-sm font-bold transition-all"
               :class="
-                settings.quality === q.value
+                settings.keepOriginal
+                  ? 'brand-gradient text-white shadow-lg shadow-indigo-500/25'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+              "
+            >
+              <span>原始</span>
+              <span
+                class="text-[10px] font-medium"
+                :class="settings.keepOriginal ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
+              >不压缩</span>
+            </button>
+            <button
+              v-for="q in qualityOptions"
+              :key="q.value"
+              @click="pickQuality(q.value)"
+              class="flex min-w-[64px] flex-col items-center rounded-xl px-3 py-2 text-sm font-bold transition-all"
+              :class="
+                !settings.keepOriginal && settings.quality === q.value
                   ? 'brand-gradient text-white shadow-lg shadow-indigo-500/25'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
               "
@@ -160,15 +203,15 @@ const handleReset = () => {
               <span
                 v-if="q.hint"
                 class="text-[10px] font-medium"
-                :class="settings.quality === q.value ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
+                :class="!settings.keepOriginal && settings.quality === q.value ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
               >{{ q.hint }}</span>
             </button>
           </div>
         </div>
       </div>
 
-      <!-- 压缩尺寸上限 -->
-      <div class="card p-6">
+      <!-- 压缩尺寸上限（原始模式下不生效） -->
+      <div class="card p-6" :class="settings.keepOriginal ? 'opacity-50' : ''">
         <div class="flex items-start gap-3">
           <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
             <Ruler class="h-5 w-5" />
@@ -176,7 +219,7 @@ const handleReset = () => {
           <div class="min-w-0 flex-1">
             <p class="text-sm font-bold text-gray-900 dark:text-white">压缩尺寸上限</p>
             <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-              长边超过上限时等比缩小，进一步减小体积
+              {{ settings.keepOriginal ? '原始模式下不压缩尺寸，此设置不生效' : '长边超过上限时等比缩小，进一步减小体积' }}
             </p>
             <div class="mt-3 flex flex-wrap gap-2">
               <button
@@ -197,39 +240,11 @@ const handleReset = () => {
         </div>
       </div>
 
-      <!-- 开关组：原图上传 / 缩略图 / 自动复制 -->
+      <!-- 开关组：缩略图 / 自动复制 -->
       <div class="card p-6">
         <div class="flex flex-col divide-y divide-gray-100/70 dark:divide-gray-800/50">
-          <!-- 保持原图 -->
-          <div class="flex items-center justify-between gap-4 pb-5">
-            <div class="flex items-start gap-3">
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
-                <Images class="h-5 w-5" />
-              </div>
-              <div>
-                <p class="text-sm font-bold text-gray-900 dark:text-white">保持原图上传</p>
-                <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                  跳过压缩保留原格式（GIF 动图始终保留以维持动画）
-                </p>
-              </div>
-            </div>
-            <button
-              role="switch"
-              :aria-checked="settings.keepOriginal"
-              :title="settings.keepOriginal ? '点击关闭' : '点击开启'"
-              @click="settings.keepOriginal = !settings.keepOriginal"
-              class="relative h-6 w-11 shrink-0 rounded-full transition-colors"
-              :class="settings.keepOriginal ? 'brand-gradient' : 'bg-gray-300 dark:bg-gray-700'"
-            >
-              <span
-                class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform"
-                :class="settings.keepOriginal ? 'translate-x-5' : ''"
-              ></span>
-            </button>
-          </div>
-
           <!-- 缩略图 -->
-          <div class="flex items-center justify-between gap-4 py-5">
+          <div class="flex items-center justify-between gap-4 pb-5">
             <div class="flex items-start gap-3">
               <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
                 <Images class="h-5 w-5" />
@@ -387,25 +402,48 @@ const handleReset = () => {
             <span :class="orphans.length > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'">
               {{ orphans.length }} 个孤儿文件
             </span>
+            <template v-if="hiddenThumbCount > 0">（其中 {{ hiddenThumbCount }} 个为缩略图，随主图清理）</template>
             <template v-if="orphans.length > 0">，共 {{ formatCompactSize(orphanTotalSize) }}</template>
           </p>
           <p v-if="scanMeta?.truncated" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
             资产数量超过单次扫描上限，结果可能不完整，可多次执行清理后重新扫描
           </p>
 
+          <!-- 孤儿卡片网格：样式与图片列表一致 -->
           <div
-            v-if="orphans.length > 0"
-            class="mt-3 max-h-48 overflow-y-auto rounded-xl border border-gray-100 bg-gray-50/60 p-2 dark:border-gray-800 dark:bg-gray-800/40"
+            v-if="displayOrphans.length > 0"
+            class="mt-3 grid max-h-[26rem] grid-cols-2 gap-3 overflow-y-auto sm:gap-4 lg:grid-cols-3 2xl:grid-cols-4"
           >
-            <div
-              v-for="orphan in orphans"
-              :key="orphan.path"
-              class="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800/80"
-            >
-              <span class="min-w-0 flex-1 truncate text-gray-600 dark:text-gray-300" :title="orphan.path">
-                {{ orphan.path }}
-              </span>
-              <span class="shrink-0 tabular-nums text-gray-400 dark:text-gray-500">{{ formatCompactSize(orphan.size) }}</span>
+            <div v-for="orphan in displayOrphans" :key="orphan.path" class="card group overflow-hidden">
+              <div class="relative aspect-[4/3] overflow-hidden bg-gray-100 dark:bg-gray-800">
+                <a
+                  :href="orphanUrl(orphan)"
+                  target="_blank"
+                  rel="noopener"
+                  class="block h-full w-full cursor-zoom-in"
+                  title="点击查看原图"
+                >
+                  <img
+                    :src="orphanUrl(orphan)"
+                    :alt="orphanName(orphan)"
+                    loading="lazy"
+                    decoding="async"
+                    class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  />
+                </a>
+                <span class="absolute bottom-2.5 left-2.5 rounded-md bg-black/45 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white backdrop-blur-sm">
+                  {{ orphanExt(orphan) }}
+                </span>
+              </div>
+              <div class="p-3">
+                <p class="truncate text-xs font-semibold text-gray-800 sm:text-sm dark:text-gray-100" :title="orphan.path">
+                  {{ orphanName(orphan) }}
+                </p>
+                <p class="mt-1 flex items-center gap-1.5 text-[11px] tabular-nums text-gray-400 dark:text-gray-500">
+                  <span>{{ formatCompactSize(orphan.size) }}</span>
+                  <span>{{ orphanDate(orphan) }}</span>
+                </p>
+              </div>
             </div>
           </div>
 
