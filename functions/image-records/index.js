@@ -117,7 +117,8 @@ export async function onRequest({ request, env }) {
           upstream: 'CNB 资产接口返回异常',
           network: 'CNB 资产接口连接失败',
         }
-        return json(1, msgs[listed.reason] || 'CNB 资产接口不可用', null, listed.reason === 'forbidden' ? 403 : 502)
+        // 注意：用 200 + code:1 返回失败，让具体原因直达前端；非 2xx 会被 axios 抛异常吞掉原因
+        return json(1, msgs[listed.reason] || 'CNB 资产接口不可用', null)
       }
       // 引用集 = 全部记录（含回收站，软删除的图仍可能被恢复）的主图 + 缩略图 imgPath
       const all = await records()

@@ -15,6 +15,14 @@ export interface CnbStorageUsage {
 
 type UsageStatus = 'idle' | 'loading' | 'ok' | 'error'
 
+// 后端 reason → 用户可读的具体原因（对应 node-functions /api/storage/usage 的返回）
+const REASON_MSG: Record<string, string> = {
+  forbidden: '访问令牌缺少 group-resource:r 权限',
+  'missing-env': '服务端未配置 SLUG_IMG 或 TOKEN_IMG',
+  upstream: 'CNB 容量接口返回异常',
+  network: 'CNB 容量接口连接失败',
+}
+
 // 模块级单例：全站侧栏共用一次探测结果
 const status = ref<UsageStatus>('idle')
 const data = ref<CnbStorageUsage | null>(null)
@@ -35,7 +43,7 @@ export function useStorageUsage() {
         data.value = resp.data as CnbStorageUsage
         status.value = 'ok'
       } else {
-        errorMsg.value = resp?.msg || 'CNB 容量接口不可用'
+        errorMsg.value = REASON_MSG[resp?.data?.reason] || resp?.msg || 'CNB 容量接口不可用'
         status.value = 'error'
       }
     } catch {

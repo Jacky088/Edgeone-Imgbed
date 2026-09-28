@@ -48,8 +48,9 @@ const scanOrphans = async () => {
       scanState.value = 'error'
     }
   } catch (e: unknown) {
-    const resp = (e as { response?: { data?: { msg?: string } } })?.response
-    scanMsg.value = resp?.data?.msg || '扫描失败，请稍后重试'
+    // 兜底：非 2xx 响应也尽量取出服务端给出的具体原因
+    const err = e as { response?: { data?: { msg?: string } } }
+    scanMsg.value = err?.response?.data?.msg || '扫描失败，请检查令牌权限后重试'
     scanState.value = 'error'
   }
 }
