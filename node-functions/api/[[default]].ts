@@ -5,21 +5,25 @@ import {
   uploadToCnb,
   createProxyHandler,
   detectImageMime,
-  extractImagePath,
   securePasswordCompare,
   signAuthToken,
+  fixMulterFilename,
+  sanitizeFilename,
+  buildPublicUrl,
+  MAX_UPLOAD_MB,
+  UPLOAD_RATE_LIMIT,
+  ALLOWED_MIMES,
 } from './_utils'
 import { authMiddleware, rateLimiter, securityHeaders } from './_middleware'
 
 const upload = multer({
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB 限制
+    fileSize: MAX_UPLOAD_MB * 1024 * 1024, // 单文件上限（默认 25MB，MAX_UPLOAD_MB 可调）
     files: 2, // 最多 2 个文件（主图 + 缩略图）
   },
   fileFilter: (req, file, cb) => {
     // 只允许图片类型
-    const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-    if (allowedMimes.includes(file.mimetype)) {
+    if (ALLOWED_MIMES.includes(file.mimetype)) {
       cb(null, true)
     } else {
       cb(new Error('只允许上传图片文件'))
@@ -32,7 +36,7 @@ const requestConfig = {
   timeout: 5000,
   headers: {
     Accept: 'image/*, */*',
-    'User-Agent': 'SeerImageProxy/1.0 (+https://seerinfo.yuyuqaq.cn)',
+    'User-Agent': 'Edgeone-Imgbed/1.4 (+https://github.com/Jacky088/Edgeone-Imgbed)',
   },
 }
 const BASE_URL = 'https://cnb.cool/' + process.env.SLUG_IMG + '/-/imgs/'
@@ -57,9 +61,11 @@ app.use(securityHeaders)
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`)
 
-  // 如果是图片代理请求，直接处理（createProxyHandler 为模块级单例，无请求级闭包）
+  // 如果是图片代理请求，直接处理（宽松限流：防止被当免费代理刷流量）
   if (req.url && req.url.startsWith('/img/')) {
-    return createProxyHandler(BASE_URL, requestConfig, req, res)
+    return rateLimiter(120, 60000)(req, res, () => {
+      createProxyHandler(BASE_URL, requestConfig, req, res)
+    })
   }
 
   next()
@@ -69,8 +75,17 @@ app.get('/', (req, res) => {
   res.json({ message: 'Hello from Express on Node Functions!' })
 })
 
+// 前端免登录判定：未设 SITE_PASSWORD 时 passwordEnabled=false，路由守卫自动放行
+app.get('/auth/status', (_req: any, res: any) => {
+  res.json(reply(0, '获取成功', { passwordEnabled: !!process.env.SITE_PASSWORD }))
+})
+
 // 身份验证接口（每分钟最多 5 次尝试，防止密码暴力破解）
-app.post('/auth/verify', rateLimiter(5, 60000), (req, res) => {
+app.post(
+  '/auth/verify',
+  // 每分钟最多 5 次尝试，防止密码暴力破解
+  rateLimiter(5, 60000),
+  (req, res) => {
   const { password, remember } = req.body
   // 获取环境变量中的密码
   const sysPassword = process.env.SITE_PASSWORD
@@ -90,13 +105,13 @@ app.post('/auth/verify', rateLimiter(5, 60000), (req, res) => {
 
 app.post(
   '/upload/img',
-  rateLimiter(30, 60000), // 每分钟最多 30 次上传（批量上传场景）
+  rateLimiter(UPLOAD_RATE_LIMIT, 60000), // 上传限流可配（UPLOAD_RATE_LIMIT，默认 120/分钟，覆盖批量上传场景）
   authMiddleware, // 添加身份验证
   upload.fields([
     { name: 'file', maxCount: 1 },
     { name: 'thumbnail', maxCount: 1 },
   ]),
-  async (req, res) => {
+  async (req: any, res: any) => {
     try {
       const files = req.files as { [fieldname: string]: Express.Multer.File[] }
       if (!files || !files.file) {
@@ -107,8 +122,7 @@ app.post(
       const thumbnailFile = files.thumbnail?.[0]
 
       // 验证文件类型
-      const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-      if (!allowedMimes.includes(mainFile.mimetype)) {
+      if (!ALLOWED_MIMES.includes(mainFile.mimetype)) {
         return res.status(400).json(reply(1, '不支持的文件类型', ''))
       }
 
@@ -118,24 +132,6 @@ app.post(
       }
       if (thumbnailFile && !detectImageMime(thumbnailFile.buffer)) {
         return res.status(400).json(reply(1, '缩略图内容不是有效的图片', ''))
-      }
-
-      // 修复 multer/busboy 将 UTF-8 文件名按 latin1 解码导致的中文乱码
-      const fixMulterFilename = (name: string): string => {
-        try {
-          const decoded = Buffer.from(name, 'latin1').toString('utf8')
-          // 解码失败（出现替换符）则保留原名
-          if (decoded && !decoded.includes('\uFFFD')) return decoded
-        } catch {
-          // ignore
-        }
-        return name
-      }
-
-      // 验证文件名，防止路径遍历：保留 Unicode 字母数字（含中文），其余替换为下划线
-      const sanitizeFilename = (filename: string) => {
-        const cleaned = filename.replace(/[^\p{L}\p{N}._-]/gu, '_')
-        return cleaned.length > 100 ? cleaned.slice(0, 100) : cleaned
       }
 
       mainFile.originalname = sanitizeFilename(fixMulterFilename(mainFile.originalname))
@@ -148,16 +144,8 @@ app.post(
         fileBuffer: mainFile.buffer,
         fileName: mainFile.originalname,
       })
-      // 处理 Base URL 拼接：移除末尾斜杠，保证格式统一
-      let baseUrl = process.env.BASE_IMG_URL || ''
-      if (baseUrl.endsWith('/')) {
-        baseUrl = baseUrl.slice(0, -1)
-      }
 
-      const mainImgPath = extractImagePath(mainResult.url)
-
-      // 强制拼接 /api/img/ 路径，结果形如: https://你的域名.com/api/img/文件名.webp
-      const mainUrl = `${baseUrl}/api/img/${mainImgPath}`
+      const mainUrl = buildPublicUrl(mainResult.url)
 
       let thumbnailUrl = null
       let thumbnailAssets = null
@@ -169,8 +157,7 @@ app.post(
           fileName: thumbnailFile.originalname,
         })
 
-        const thumbnailImgPath = extractImagePath(thumbnailResult.url)
-        thumbnailUrl = `${baseUrl}/api/img/${thumbnailImgPath}`
+        thumbnailUrl = buildPublicUrl(thumbnailResult.url)
         thumbnailAssets = thumbnailResult.assets
       }
 
@@ -181,6 +168,7 @@ app.post(
           assets: mainResult.assets,
           thumbnailAssets: thumbnailAssets,
           hasThumbnail: !!thumbnailFile,
+          maxUploadMb: MAX_UPLOAD_MB,
         }),
       )
     } catch (err: any) {
@@ -197,7 +185,7 @@ app.post(
 // Authorization: Basic base64(api:<PICGO_TOKEN>)，PICGO_TOKEN 为环境变量
 app.post(
   '/upload/picgo',
-  rateLimiter(30, 60000),
+  rateLimiter(UPLOAD_RATE_LIMIT, 60000),
   (req, res, next) => {
     const picgoToken = process.env.PICGO_TOKEN
     if (!picgoToken) {
@@ -222,30 +210,16 @@ app.post(
     }
   },
   upload.single('file'),
-  async (req: any, res) => {
+  async (req: any, res: any) => {
     try {
       const file: Express.Multer.File | undefined = req.file
       if (!file) {
         return res.status(400).json(reply(1, '未上传文件', null))
       }
-      const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-      if (!allowedMimes.includes(file.mimetype) || !detectImageMime(file.buffer)) {
+      if (!ALLOWED_MIMES.includes(file.mimetype) || !detectImageMime(file.buffer)) {
         return res.status(400).json(reply(1, '不支持的文件类型', null))
       }
 
-      const fixMulterFilename = (name: string): string => {
-        try {
-          const decoded = Buffer.from(name, 'latin1').toString('utf8')
-          if (decoded && !decoded.includes('\uFFFD')) return decoded
-        } catch {
-          // ignore
-        }
-        return name
-      }
-      const sanitizeFilename = (filename: string) => {
-        const cleaned = filename.replace(/[^\p{L}\p{N}._-]/gu, '_')
-        return cleaned.length > 100 ? cleaned.slice(0, 100) : cleaned
-      }
       file.originalname = sanitizeFilename(fixMulterFilename(file.originalname))
 
       const mainResult = await uploadToCnb({
@@ -253,9 +227,7 @@ app.post(
         fileName: file.originalname,
       })
 
-      let baseUrl = process.env.BASE_IMG_URL || ''
-      if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1)
-      const mainUrl = `${baseUrl}/api/img/${extractImagePath(mainResult.url)}`
+      const mainUrl = buildPublicUrl(mainResult.url)
 
       // PicGo 期望 { success: true, result: [url] } 格式
       return res.json({ success: true, result: [mainUrl] })
@@ -267,24 +239,26 @@ app.post(
 )
 
 // 前端展示用：当前存储桶名（SLUG_IMG 非密钥可返回；仍需登录态，避免未授权探测）
-app.get('/config', rateLimiter(30, 60000), authMiddleware, (_req: any, res: any) => {
-  res.json(reply(0, '获取成功', { bucket: process.env.SLUG_IMG || '' }))
+app.get('/config', authMiddleware, (_req: any, res: any) => {
+  res.json(reply(0, '获取成功', {
+    bucket: process.env.SLUG_IMG || '',
+    passwordEnabled: !!process.env.SITE_PASSWORD,
+    maxUploadMb: MAX_UPLOAD_MB,
+  }))
 })
 
 // 未知 /api 路由兜底：统一返回 JSON（code/msg/data 约定），避免 Express 默认 HTML 404
 // 注意：新增路由必须注册在这两个中间件之前，否则会被 404 兜底吞掉
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 app.use((_req: any, res: any) => {
   res.status(404).json(reply(1, '接口不存在', null))
 })
 
 // 上传错误统一 JSON 处理：multer 限流/类型拒绝默认会走 Express HTML 错误页
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 app.use((err: any, _req: any, res: any, _next: (_e: unknown) => void) => {
   console.error('API 错误:', err?.message || err)
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json(reply(1, '文件超过 5MB 上限', null))
+      return res.status(400).json(reply(1, `文件超过 ${MAX_UPLOAD_MB}MB 上限`, null))
     }
     return res.status(400).json(reply(1, '文件上传失败', null))
   }

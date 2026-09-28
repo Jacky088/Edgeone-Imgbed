@@ -4,25 +4,13 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'self'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'self'"
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="alternate icon" href="/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <script>
-      // 必须在首帧渲染前同步主题 class，否则暗色用户刷新时会先闪白屏
-      ;(function () {
-        try {
-          var t = localStorage.getItem('theme')
-          if (t !== 'dark' && t !== 'light') {
-            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-          }
-          document.documentElement.classList.add(t)
-        } catch (e) {
-          document.documentElement.classList.add('light')
-        }
-      })()
-    </script>
+    <!-- 独立脚本文件而非内联：CSP 可去掉 script-src 'unsafe-inline' -->
+    <script src="/theme-init.js"></script>
     <title>CNB图床-基于EdgeOne加速</title>
   </head>
   <body>

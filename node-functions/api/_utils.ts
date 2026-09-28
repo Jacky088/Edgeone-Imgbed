@@ -92,6 +92,17 @@ function securePasswordCompare(a: string, b: string): boolean {
  * @param {string} [param0.type='imgs'] - 上传类型，默认为 'imgs'
  * @returns 上传结果包含资源信息和URL
  */
+// CNB API 超时：挂起时及时失败，避免占住函数实例
+const CNB_TIMEOUT_MS = 30_000
+
+/**
+ * 上传文件到 CNB 对象存储
+ * @param {object} param0 - 上传参数
+ * @param {Buffer} param0.fileBuffer - 文件的 Buffer
+ * @param {string} param0.fileName - 文件名
+ * @param {string} [param0.type='imgs'] - 上传类型，默认为 'imgs'
+ * @returns 上传结果包含资源信息和URL
+ */
 async function uploadToCnb({
   fileBuffer,
   fileName,
@@ -111,6 +122,7 @@ async function uploadToCnb({
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ name: fileName, size: fileSize }),
+    signal: AbortSignal.timeout(CNB_TIMEOUT_MS),
   })
 
   if (!metaResp.ok) {
@@ -123,6 +135,7 @@ async function uploadToCnb({
     method: 'PUT',
     headers: { 'Content-Type': 'application/octet-stream' },
     body: fileBuffer,
+    signal: AbortSignal.timeout(CNB_TIMEOUT_MS),
   })
 
   if (!uploadResp.ok) {
@@ -174,7 +187,14 @@ async function proxyImageRequest(
         return res.status(403).json({ error: 'Forbidden file type' })
       }
 
-      const targetUrl = new URL(urlPath, baseUrl).toString()
+      const target = new URL(urlPath, baseUrl)
+      // SSRF 防护：路径若是绝对 URL 会覆盖 base，导致本接口沦为任意主机的开放代理。
+      // 目标必须与 BASE_URL 同源，否则拒绝
+      if (target.origin !== new URL(baseUrl).origin) {
+        console.error('❌ [Proxy] Forbidden image host:', target.origin)
+        return res.status(403).json({ error: 'Forbidden image host' })
+      }
+      const targetUrl = target.toString()
       console.log(`🔄 [Proxy] ${req.path || req.url} -> ${targetUrl}`)
 
       const fetchOptions = {
@@ -260,4 +280,51 @@ function extractImagePath(url: string): string {
   return url
 }
 
-export { proxyImageRequest as createProxyHandler, uploadToCnb, signAuthToken, verifyAuthToken, detectImageMime, securePasswordCompare, extractImagePath }
+/** 服务端单文件大小上限（MB），可用环境变量 MAX_UPLOAD_MB 覆盖。
+ * 前端压缩后直传产物远小于此值；该上限主要约束 GIF / "保持原图" 的大文件直传 */
+const MAX_UPLOAD_MB = (() => {
+  const n = Number(process.env.MAX_UPLOAD_MB)
+  return Number.isFinite(n) && n > 0 ? Math.min(100, Math.round(n)) : 25
+})()
+
+/** 上传限流（次/分钟/IP），可用环境变量 UPLOAD_RATE_LIMIT 覆盖 */
+const UPLOAD_RATE_LIMIT = (() => {
+  const n = Number(process.env.UPLOAD_RATE_LIMIT)
+  return Number.isFinite(n) && n > 0 ? Math.min(600, Math.round(n)) : 120
+})()
+
+/**
+ * 修复 multer/busbus 将 UTF-8 文件名按 latin1 解码导致的中文乱码
+ */
+function fixMulterFilename(name: string): string {
+  try {
+    const decoded = Buffer.from(name, 'latin1').toString('utf8')
+    // 解码失败（出现替换符）则保留原名
+    if (decoded && !decoded.includes('\uFFFD')) return decoded
+  } catch {
+    // ignore
+  }
+  return name
+}
+
+/**
+ * 文件名安全过滤：防止路径遍历；保留 Unicode 字母数字（含中文），其余替换为下划线
+ */
+function sanitizeFilename(filename: string): string {
+  const cleaned = filename.replace(/[^\p{L}\p{N}._-]/gu, '_')
+  return cleaned.length > 100 ? cleaned.slice(0, 100) : cleaned
+}
+
+/**
+ * 拼接对外图片直链：BASE_IMG_URL 去尾斜杠 + /api/img/ + CNB 路径
+ */
+function buildPublicUrl(cnbPath: string): string {
+  let baseUrl = process.env.BASE_IMG_URL || ''
+  if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1)
+  return `${baseUrl}/api/img/${extractImagePath(cnbPath)}`
+}
+
+/** 上传侧允许的 MIME 类型（与前端 allowedTypes 一致） */
+const ALLOWED_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+
+export { proxyImageRequest as createProxyHandler, uploadToCnb, signAuthToken, verifyAuthToken, detectImageMime, securePasswordCompare, extractImagePath, fixMulterFilename, sanitizeFilename, buildPublicUrl, MAX_UPLOAD_MB, UPLOAD_RATE_LIMIT, ALLOWED_MIMES }

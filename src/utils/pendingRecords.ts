@@ -9,6 +9,8 @@ export interface PendingRecord {
   size: number
   type: string
   createdAt: number
+  width?: number
+  height?: number
 }
 
 const PENDING_RECORDS_KEY = 'pending_image_records'
@@ -36,20 +38,42 @@ export function enqueuePendingRecord(record: PendingRecord): void {
   }
 }
 
-/** 管理页挂载时调用：重试补写队列里的记录，返回补写成功条数 */
+/** 管理页挂载时调用：重试补写队列里的记录，返回补写成功条数。
+ * 优先走批量写（50 条/批，与服务端上限一致），失败回退逐条写 */
 export async function flushPendingRecords(): Promise<number> {
   const queue = loadPendingRecords()
   if (queue.length === 0) return 0
   const rest: PendingRecord[] = []
   let ok = 0
-  for (const record of queue) {
+
+  // 先尝试批量：一次请求最多 50 条
+  const batches: PendingRecord[][] = []
+  for (let i = 0; i < queue.length; i += 50) {
+    batches.push(queue.slice(i, i + 50))
+  }
+  const batchFailed: PendingRecord[] = []
+  for (const batch of batches) {
     try {
-      await axios.post('/image-records', record, { baseURL: '' })
-      ok++
+      const { data } = await axios.post('/image-records', { records: batch }, { baseURL: '' })
+      if (data.code === 0) ok += batch.length
+      else batchFailed.push(...batch)
     } catch {
-      rest.push(record)
+      batchFailed.push(...batch)
     }
   }
+
+  // 批量被拒（旧版服务端不支持 records 数组）时回退逐条写
+  if (batchFailed.length > 0) {
+    for (const record of batchFailed) {
+      try {
+        await axios.post('/image-records', record, { baseURL: '' })
+        ok++
+      } catch {
+        rest.push(record)
+      }
+    }
+  }
+
   try {
     if (rest.length > 0) {
       localStorage.setItem(PENDING_RECORDS_KEY, JSON.stringify(rest))

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { isTokenLive } from '@/utils/authToken'
+import { isPasswordEnabled } from './authStatus'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -41,6 +42,12 @@ router.beforeEach((to, from, next) => {
   const remembered = localStorage.getItem('site_access_token')
   if (remembered && !sessionStorage.getItem('site_access_token')) {
     sessionStorage.setItem('site_access_token', remembered)
+  }
+
+  // 0. 未设置 SITE_PASSWORD（开放访问）时直接放行，不再强制走登录页
+  if (isPasswordEnabled() === false) {
+    next()
+    return
   }
 
   // 1. 检查是否有 token，并预判是否过期（过期 token 视为未登录，直接拦去登录页）

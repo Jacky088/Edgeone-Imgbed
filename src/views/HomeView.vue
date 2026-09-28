@@ -36,9 +36,9 @@ import { useBucket } from '@/composables/useBucket'
 import { useGlobalStats } from '@/composables/useGlobalStats'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 
-const { bucket, fetchBucket } = useBucket()
-// 首页 ?stats=1 顺带拿到的统计直接写入全局侧栏，省一次请求
-const { stats: globalStats } = useGlobalStats()
+const { fetchBucket } = useBucket()
+// 首页 recent=4 与侧栏统计共用同一次请求（fetchRecentWithStats 内部去重合并）
+const { stats: globalStats, fetchRecentWithStats } = useGlobalStats()
 
 const router = useRouter()
 
@@ -50,7 +50,7 @@ interface HomeStats {
   count: number
   totalSize: number
   trashed: number
-  todayCount: number
+  todayCount?: number
 }
 interface RecentItem {
   id: string
@@ -85,7 +85,7 @@ const statCards = computed(() => [
   {
     label: '今日新增',
     sub: '图片',
-    value: stats.value ? formatCompactCount(stats.value.todayCount) : '—',
+    value: stats.value ? formatCompactCount(stats.value.todayCount ?? 0) : '—',
     icon: CalendarCheck,
     tint: 'bg-violet-50 text-violet-500 dark:bg-violet-500/15 dark:text-violet-300',
   },
@@ -102,20 +102,19 @@ const fetchHome = async (quiet = false) => {
   if (!quiet) loadingStats.value = true
   fetchBucket()
   try {
-    const { data } = await axios.get('/image-records', {
-      baseURL: '',
-      params: { stats: 1 },
-    })
-    if (data.code === 0 && !Array.isArray(data.data)) {
-      stats.value = data.data.stats ?? null
-      if (stats.value) globalStats.value = stats.value
-      // 乐观插入的行（_optimistic）以服务端返回为准：同 id 替换，其余保留
-      const records = (data.data.records ?? []) as RecentItem[]
+    // recent=4 + stats 一次请求拿全（与 AppShell 侧栏统计去重合并）
+    const records = (await fetchRecentWithStats(4)) as RecentItem[]
+    stats.value = globalStats.value
+    // 乐观插入的行（_optimistic）以服务端返回为准：同 id 替换，其余保留
+    if (records.length > 0) {
       const serverIds = new Set(records.map((r) => r.id))
       const pending = recent.value.filter((r) => r._optimistic && !serverIds.has(r.id))
       recent.value = [...pending, ...records]
         .sort((a, b) => b.createdAt - a.createdAt)
         .slice(0, 4)
+    } else if (stats.value && stats.value.count === 0) {
+      // 服务端确认无记录时才清空乐观行
+      recent.value = []
     }
   } catch {
     // 统计失败不打扰主流程，卡片显示占位

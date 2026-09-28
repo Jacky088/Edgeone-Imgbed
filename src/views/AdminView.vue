@@ -428,8 +428,9 @@ const toggleSelect = (id: string) => {
 
 // 网格视图的多选入口是卡片 checkbox + 顶部批量下拉，此处保留底层选中态即可
 
+// 读取 selectionVersion 驱动 computed 更新（Set 内部变更不触发响应式）
 const selectedList = computed(() => {
-  selectionVersion.value
+  void selectionVersion.value
   return list.value.filter((item) => selectedIds.value.has(item.id))
 })
 

@@ -1,128 +1,78 @@
-const PREFIX = 'image_'
-// 软删除记录保留 30 天，过期由读取时惰性清理
-const SOFT_DELETE_TTL_MS = 30 * 24 * 60 * 60 * 1000
+// 软删除记录保留 30 天，过期由读取时惰性清理（SOFT_DELETE_TTL_MS 与 PREFIX 均定义于 _lib.js）
 
-function json(code, msg, data, status = 200) {
-  return new Response(JSON.stringify({ code, msg, data }), {
-    status,
-    headers: {
-      'content-type': 'application/json; charset=UTF-8',
-      'cache-control': 'no-store',
-    },
-  })
-}
+import {
+  json,
+  isAuthorized,
+  isRateLimited,
+  getClientIp,
+  safeIdOf,
+  recordKeyOf,
+  readIndex,
+  buildIndex,
+  buildStats,
+  writeIndex,
+  snapshot,
+  purgeExpired,
+  sortRecords,
+} from './_lib.js'
 
-// 与 node-functions/api/_utils.ts 保持一致的密钥派生规则
-function getAuthSecret(env) {
-  return env?.AUTH_SECRET || `imgbed-auth:${env?.SITE_PASSWORD || ''}`
-}
-
-// base64url 解码为二进制字符串
-function b64urlDecode(input) {
-  const normalized = input.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
-  return atob(padded)
-}
-
-// 校验 HMAC-SHA256 签名 token 的签名与有效期（与 Node 侧签发逻辑配套）
-async function verifyAuthToken(token, env) {
-  try {
-    const [payload, sig] = token.split('.')
-    if (!payload || !sig) return false
-
-    const key = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(getAuthSecret(env)),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign'],
-    )
-    const mac = new Uint8Array(
-      await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload)),
-    )
-    const sigBytes = Uint8Array.from(b64urlDecode(sig), (ch) => ch.charCodeAt(0))
-
-    if (sigBytes.length !== mac.length) return false
-    let diff = 0
-    for (let i = 0; i < mac.length; i++) diff |= sigBytes[i] ^ mac[i]
-    if (diff !== 0) return false
-
-    const data = JSON.parse(b64urlDecode(payload))
-    return typeof data.exp === 'number' && data.exp > Date.now()
-  } catch {
-    return false
+// 每条记录落盘的最简形状（拒绝非法/多余字段，宽高在此持久化）
+function normalizeRecord(record) {
+  const size = Number(record.size)
+  const width = Number(record.width)
+  const height = Number(record.height)
+  return {
+    id: record.id,
+    name: String(record.name || ''),
+    url: String(record.url),
+    thumbnailUrl: record.thumbnailUrl ? String(record.thumbnailUrl) : undefined,
+    size: Number.isFinite(size) && size > 0 ? Math.round(size) : 0,
+    type: String(record.type || ''),
+    createdAt: Number(record.createdAt) || Date.now(),
+    width: Number.isFinite(width) && width > 0 ? Math.round(width) : undefined,
+    height: Number.isFinite(height) && height > 0 ? Math.round(height) : undefined,
   }
 }
 
-async function isAuthorized(request, env) {
-  if (!env?.SITE_PASSWORD) return true
-  const auth = request.headers.get('authorization') || ''
-  if (!auth.startsWith('Bearer ')) return false
-  return verifyAuthToken(auth.slice(7), env)
-}
-
-// 简单的速率限制（内存版，多实例/边缘运行时下为尽力而为的防护，与 node-functions 侧同策略）
-const rateLimitMap = new Map()
-
-function getClientIp(request) {
-  const eoIp = request.headers.get('eo-client-ip')
-  if (eoIp && eoIp.trim()) return eoIp.trim()
-  const xff = request.headers.get('x-forwarded-for')
-  if (xff) {
-    const ips = xff.split(',').map((s) => s.trim()).filter(Boolean)
-    if (ips.length > 0) return ips[ips.length - 1]
-  }
-  return 'unknown'
-}
-
-// 命中限流返回 true；调用方按读写分桶计数
-function isRateLimited(bucket, maxRequests, windowMs = 60000) {
-  const now = Date.now()
-  const record = rateLimitMap.get(bucket)
-  if (!record || now > record.resetTime) {
-    rateLimitMap.set(bucket, { count: 1, resetTime: now + windowMs })
-    if (rateLimitMap.size > 500) {
-      for (const [key, rec] of rateLimitMap) {
-        if (now > rec.resetTime) rateLimitMap.delete(key)
+// 幂等写：同 id / 同 URL 已存在时更新原记录而不是重复新增（前端重试/秒传补记均安全）
+async function upsertRecord(normalized) {
+  const existing = await IMG_RECORDS_KV.get(recordKeyOf(safeIdOf(normalized.id)), { type: 'json' })
+  // URL 相同视为同一张图：保留原 id 与 createdAt，仅刷新元数据
+  if (!existing) {
+    const all = await readIndex()
+    if (all) {
+      const byUrl = all.find((r) => r.url === normalized.url && !r.deletedAt)
+      if (byUrl) {
+        normalized.id = byUrl.id
+        normalized.createdAt = byUrl.createdAt
       }
     }
-    return false
   }
-  if (record.count >= maxRequests) return true
-  record.count++
-  return false
+  await IMG_RECORDS_KV.put(recordKeyOf(safeIdOf(normalized.id)), JSON.stringify(normalized))
+  await updateIndex(normalized)
+  return normalized
 }
 
-async function listRecords() {
-  const records = []
-  let cursor = ''
-  let complete = false
-
-  while (!complete) {
-    const page = await IMG_RECORDS_KV.list({ prefix: PREFIX, cursor, limit: 256 })
-    const keys = Array.isArray(page?.keys) ? page.keys : []
-    const values = await Promise.all(
-      keys.map(({ key }) => IMG_RECORDS_KV.get(key, { type: 'json' })),
-    )
-
-    records.push(...values.filter(Boolean))
-    complete = Boolean(page?.complete) || keys.length === 0
-    cursor = page?.cursor || keys.at(-1)?.key || ''
+// 单条记录变更后同步索引（读改写；索引缺失时下次读取会自动重建）
+async function updateIndex(normalized) {
+  const index = await readIndex()
+  if (!index) return
+  const entry = {
+    id: normalized.id,
+    name: normalized.name,
+    url: normalized.url,
+    thumbnailUrl: normalized.thumbnailUrl,
+    size: normalized.size,
+    type: normalized.type,
+    createdAt: normalized.createdAt,
+    width: normalized.width,
+    height: normalized.height,
+    deletedAt: undefined,
   }
-
-  return records.sort((a, b) => b.createdAt - a.createdAt)
-}
-
-// 惰性清理：软删除超过保留期的记录物理移除
-async function purgeExpired(records) {
-  const now = Date.now()
-  const expired = records.filter(
-    (r) => r.deletedAt && now - r.deletedAt > SOFT_DELETE_TTL_MS,
-  )
-  if (expired.length === 0) return
-  await Promise.all(
-    expired.map((r) => IMG_RECORDS_KV.delete(`${PREFIX}${String(r.id).replace(/[^a-zA-Z0-9_]/g, '')}`)),
-  )
+  const pos = index.findIndex((r) => r.id === normalized.id)
+  if (pos >= 0) index[pos] = { ...index[pos], ...entry, deletedAt: index[pos].deletedAt }
+  else index.unshift(entry)
+  await writeIndex(index)
 }
 
 export async function onRequest({ request, env }) {
@@ -134,84 +84,99 @@ export async function onRequest({ request, env }) {
     const url = new URL(request.url)
     const ip = getClientIp(request)
 
-    // 写操作更严格：?write=1 富余保护
+    // 写操作更严格；批量写单独放宽（一次请求写多条，请求数反而更少）
     if (request.method !== 'GET') {
-      if (isRateLimited(`write:${ip}`, 60)) {
+      if (isRateLimited(`write:${ip}`, 120)) {
         return json(429, '请求过于频繁，请稍后再试', null, 429)
       }
     } else if (isRateLimited(`read:${ip}`, 120)) {
       return json(429, '请求过于频繁，请稍后再试', null, 429)
     }
 
-    // 单次全表扫描 + 可选统计：GET（?stats=1 顺带返回统计，避免列表/统计两次扫描）
-    async function snapshot() {
-      const records = await listRecords()
-      await purgeExpired(records)
-      return records
+    // 单次快照（索引优先，缺失回退扫描并重建）+ 惰性清理
+    async function records() {
+      const all = await snapshot()
+      return purgeExpired(all)
     }
 
-    function buildStats(records) {
-      const active = records.filter((r) => !r.deletedAt)
-      const byType = {}
-      let totalSize = 0
-      let todayCount = 0
-      const dayStart = new Date()
-      dayStart.setHours(0, 0, 0, 0)
-      const dayStartTs = dayStart.getTime()
-      for (const r of active) {
-        const ext = (r.type || '').split('/')[1] || 'other'
-        byType[ext] = (byType[ext] || 0) + 1
-        totalSize += Number(r.size) || 0
-        if (Number(r.createdAt) >= dayStartTs) todayCount++
-      }
-      return {
-        count: active.length,
-        totalSize,
-        trashed: records.length - active.length,
-        todayCount,
-        byType,
-      }
-    }
-
-    // 统计：总数 / 总大小 / 类型分布（含软删除中的记录）
+    // 统计：总数 / 总大小 / 类型分布
     if (request.method === 'GET' && url.pathname.endsWith('/stats')) {
-      const records = await snapshot()
-      return json(0, '获取成功', buildStats(records))
+      const all = await records()
+      return json(0, '获取成功', buildStats(all))
     }
 
     if (request.method === 'GET') {
-      const records = await snapshot()
+      const all = await records()
       // 默认只返回未删除记录；?trash=1 返回回收站
       const showTrash = url.searchParams.get('trash') === '1'
-      const filtered = showTrash ? records.filter((r) => r.deletedAt) : records.filter((r) => !r.deletedAt)
-      if (url.searchParams.get('stats') === '1') {
-        return json(0, '获取成功', { records: filtered, stats: buildStats(records) })
+      const filtered = showTrash ? all.filter((r) => r.deletedAt) : all.filter((r) => !r.deletedAt)
+      const stats = buildStats(all)
+
+      // ?recent=N：只取最近 N 张（首页"最近上传"专用，避免全量下发）
+      const recentParam = Number(url.searchParams.get('recent'))
+      if (Number.isFinite(recentParam) && recentParam > 0) {
+        const n = Math.min(50, Math.round(recentParam))
+        const slice = sortRecords(filtered, 'createdAt', 'desc').slice(0, n)
+        return json(0, '获取成功', { records: slice, stats })
       }
-      return json(0, '获取成功', filtered)
+
+      // 服务端排序 + 分页：?sort=name|size|createdAt&dir=asc|desc&limit=&offset=
+      const sortKey = ['name', 'size', 'createdAt'].includes(url.searchParams.get('sort'))
+        ? url.searchParams.get('sort')
+        : 'createdAt'
+      const dir = url.searchParams.get('dir') === 'asc' ? 'asc' : 'desc'
+      const sorted = sortRecords(filtered, sortKey, dir)
+
+      const limitParam = Number(url.searchParams.get('limit'))
+      const offsetParam = Number(url.searchParams.get('offset'))
+      if (Number.isFinite(limitParam) && limitParam > 0) {
+        const limit = Math.min(500, Math.round(limitParam))
+        const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? Math.round(offsetParam) : 0
+        return json(0, '获取成功', {
+          records: sorted.slice(offset, offset + limit),
+          total: sorted.length,
+          stats,
+        })
+      }
+
+      // 兼容旧形状：不带分页参数时仍全量返回（含 ?stats=1 顺带统计）
+      if (url.searchParams.get('stats') === '1') {
+        return json(0, '获取成功', { records: sorted, stats })
+      }
+      return json(0, '获取成功', sorted)
     }
 
     if (request.method === 'POST') {
-      const record = await request.json()
+      const body = await request.json()
+      // 批量写：{ records: [...] }（上限 50 条/次；批量写后一次性重建索引，避免 N 次读改写）
+      if (body && Array.isArray(body.records)) {
+        const items = body.records.slice(0, 50)
+        if (items.length === 0) return json(1, '记录列表为空', null, 400)
+        const invalid = items.findIndex((r) => !r?.id || !r?.url || !r?.createdAt)
+        if (invalid >= 0) return json(1, `第 ${invalid + 1} 条记录缺少必要字段`, null, 400)
+
+        for (const raw of items) {
+          const normalized = normalizeRecord(raw)
+          const safeId = safeIdOf(normalized.id)
+          if (!safeId) return json(1, '无效的记录 ID', null, 400)
+          await IMG_RECORDS_KV.put(recordKeyOf(safeId), JSON.stringify(normalized))
+        }
+        // 全量重建索引：批量写本身就是一次大批变更，重建比逐条读改写更快且绝对一致
+        const all = await records()
+        const rebuilt = buildIndex(all)
+        await writeIndex(rebuilt)
+        return json(0, `已保存 ${items.length} 条记录`, { ok: items.length })
+      }
+
+      // 单条写（兼容旧调用方）
+      const record = body
       if (!record?.id || !record?.url || !record?.createdAt) {
         return json(1, '记录缺少必要字段', null, 400)
       }
-
-      const safeId = String(record.id).replace(/[^a-zA-Z0-9_]/g, '')
+      const safeId = safeIdOf(record.id)
       if (!safeId) return json(1, '无效的记录 ID', null, 400)
-
-      await IMG_RECORDS_KV.put(
-        `${PREFIX}${safeId}`,
-        JSON.stringify({
-          id: record.id,
-          name: String(record.name || ''),
-          url: String(record.url),
-          thumbnailUrl: record.thumbnailUrl ? String(record.thumbnailUrl) : undefined,
-          size: Number(record.size) || 0,
-          type: String(record.type || ''),
-          createdAt: Number(record.createdAt),
-        }),
-      )
-      return json(0, '保存成功', null)
+      const saved = await upsertRecord(normalizeRecord(record))
+      return json(0, '保存成功', { id: saved.id })
     }
 
     // PUT：恢复回收站记录（清除 deletedAt 标记）
@@ -222,13 +187,16 @@ export async function onRequest({ request, env }) {
       const targets = ids.slice(0, 100)
       let ok = 0
       for (const id of targets) {
-        const safeId = id.replace(/[^a-zA-Z0-9_]/g, '')
-        if (!safeId) continue
-        const record = await IMG_RECORDS_KV.get(`${PREFIX}${safeId}`, { type: 'json' })
+        const key = recordKeyOf(safeIdOf(id))
+        const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
         if (!record) continue
         delete record.deletedAt
-        await IMG_RECORDS_KV.put(`${PREFIX}${safeId}`, JSON.stringify(record))
+        await IMG_RECORDS_KV.put(key, JSON.stringify(record))
         ok++
+      }
+      if (ok > 0) {
+        const all = await records()
+        await writeIndex(buildIndex(all))
       }
       if (targets.length === 1) {
         return ok === 1 ? json(0, '已恢复', null) : json(1, '记录不存在', null, 404)
@@ -242,18 +210,28 @@ export async function onRequest({ request, env }) {
       const purge = url.searchParams.get('purge') === '1'
       // 批量删除：?id=a&id=b（上限 100）；默认软删除进回收站，30 天后惰性清理；?purge=1 彻底删除
       const targets = ids.slice(0, 100)
-      const keyOf = (id) => `${PREFIX}${id.replace(/[^a-zA-Z0-9_]/g, '')}`
+      const keyOf = (id) => recordKeyOf(safeIdOf(id))
       if (targets.length === 1) {
         const key = keyOf(targets[0])
         const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
-        if (!record) return json(1, '记录不存在', null, 404)
+        if (!record) return json(0, '已删除', null) // 幂等：重复删除不再 404
         if (purge) {
           await IMG_RECORDS_KV.delete(key)
-          return json(0, '已彻底删除', null)
+        } else {
+          record.deletedAt = Date.now()
+          await IMG_RECORDS_KV.put(key, JSON.stringify(record))
         }
-        record.deletedAt = Date.now()
-        await IMG_RECORDS_KV.put(key, JSON.stringify(record))
-        return json(0, '已移入回收站', null)
+        // 同步索引：彻底删除移除条目，软删除仅打标记（回收站视图免扫描）
+        const index = await readIndex()
+        if (index) {
+          const pos = index.findIndex((r) => r.id === record.id)
+          if (pos >= 0) {
+            if (purge) index.splice(pos, 1)
+            else index[pos] = { ...index[pos], deletedAt: record.deletedAt }
+            await writeIndex(index)
+          }
+        }
+        return json(0, purge ? '已彻底删除' : '已移入回收站', null)
       }
       let ok = 0
       for (const id of targets) {
@@ -267,6 +245,10 @@ export async function onRequest({ request, env }) {
           await IMG_RECORDS_KV.put(key, JSON.stringify(record))
         }
         ok++
+      }
+      if (ok > 0) {
+        const all = await records()
+        await writeIndex(buildIndex(all))
       }
       return json(0, purge ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`, { ok, fail: targets.length - ok })
     }

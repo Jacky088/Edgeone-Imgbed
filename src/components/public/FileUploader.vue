@@ -23,7 +23,7 @@
             {{ isDragging ? '快松手！' : '点击或拖拽上传' }}
           </p>
           <p class="mx-auto max-w-md text-xs leading-relaxed text-gray-400 sm:text-sm dark:text-gray-500">
-            支持 JPG、PNG、GIF、WebP（最大 5MB），可批量多选、Ctrl+V 粘贴或拖入整个文件夹
+            支持 JPG、PNG、GIF、WebP（最大 30MB），可批量多选、Ctrl+V 粘贴或拖入整个文件夹
           </p>
         </div>
       </div>
@@ -76,7 +76,7 @@
             {{ isDragging ? '快松手！' : '点击或拖拽上传' }}
           </p>
           <p class="text-sm text-gray-400 dark:text-gray-500">
-            支持 JPG, PNG, GIF, WebP (最大 5MB)，可批量多选、Ctrl+V 粘贴或拖入整个文件夹
+            支持 JPG, PNG, GIF, WebP (最大 30MB)，可批量多选、Ctrl+V 粘贴或拖入整个文件夹
           </p>
         </div>
       </div>
@@ -234,10 +234,17 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import axios from '@/utils/axios'
 import type { AxiosProgressEvent } from 'axios'
 import { Progress } from '@/components/ui/progress'
-import { enqueuePendingRecord } from '@/utils/pendingRecords'
 import { toast } from 'vue-sonner'
 import { UploadCloud, XCircle, Loader2, FileImage, CheckCircle2, ArrowRight } from 'lucide-vue-next'
 import { useUploadSettings } from '@/composables/useUploadSettings'
+import { useGlobalStats } from '@/composables/useGlobalStats'
+import { enqueuePendingRecord, type PendingRecord } from '@/utils/pendingRecords'
+import { hashBlob, lookupHash, rememberHash } from '@/utils/dedupeCache'
+
+// 原始文件上限：客户端 30MB（压缩前的手机照片/截图）；压缩产物仍受服务端
+// MAX_UPLOAD_MB（默认 25MB）约束。批量批次大小与 KV 批量写接口上限一致
+const RAW_MAX_MB = 30
+const BATCH_FLUSH_SIZE = 50
 
 interface Props {
   /** hero：首页目标图风格大拖拽区 + 渐变大按钮；default：原紧凑形态 */
@@ -307,6 +314,8 @@ interface UploadTask {
   thumbnailWidth: number
   thumbnailHeight: number
   thumbnailSize: number
+  /** 压缩产物 SHA-256（秒传查重 key），hashBlob 失败时为 null */
+  contentHash: string | null
   errorMsg: string
 }
 
@@ -557,6 +566,11 @@ async function processTaskFile(t: UploadTask): Promise<void> {
     t.thumbnailHeight = thumbnail.height
     t.thumbnailSize = thumbnail.size
   }
+
+  // 秒传查重：对最终上传产物算 SHA-256（约 1ms/MB），失败不阻塞主流程
+  if (t.file) {
+    t.contentHash = await hashBlob(t.file)
+  }
 }
 
 // 批量入口：校验（非图片/超大/重复）→ 建队 → 逐张压缩（压缩失败仅标记该张，不中断批次）
@@ -577,8 +591,8 @@ async function handleFiles(list: File[]): Promise<void> {
       continue
     }
     // 拦截超大文件：压缩前直接拒绝并明确告知上限
-    if (f.size > 5 * 1024 * 1024) {
-      pushRejected(f.name, '超过 5MB')
+    if (f.size > RAW_MAX_MB * 1024 * 1024) {
+      pushRejected(f.name, `超过 ${RAW_MAX_MB}MB`)
       continue
     }
     // 批内同名/重复判重：NFC 规范化 + 小写对比
@@ -593,13 +607,13 @@ async function handleFiles(list: File[]): Promise<void> {
   }
 
   const typeSkipped = rejected.filter((r) => r.reason === '非图片格式').length
-  const oversizeSkipped = rejected.filter((r) => r.reason === '超过 5MB').length
+  const oversizeSkipped = rejected.filter((r) => r.reason === `超过 ${RAW_MAX_MB}MB`).length
   const dupNames = rejected.filter((r) => r.reason === '重复/同名').map((r) => r.name)
   if (typeSkipped > 0) {
     toast.warning(`已跳过 ${typeSkipped} 个非图片文件`)
   }
   if (oversizeSkipped > 0) {
-    toast.warning(`最大只允许5MB的图片上传！（已跳过 ${oversizeSkipped} 张超大图片）`)
+    toast.warning(`单张图片最大 ${RAW_MAX_MB}MB！（已跳过 ${oversizeSkipped} 张超大图片）`)
   }
   if (dupNames.length > 0) {
     const shown = dupNames.slice(0, 3).join('、')
@@ -628,6 +642,7 @@ async function handleFiles(list: File[]): Promise<void> {
     thumbnailWidth: 0,
     thumbnailHeight: 0,
     thumbnailSize: 0,
+    contentHash: null,
     errorMsg: '',
   }))
   errorMsg.value = ''
@@ -712,7 +727,7 @@ function onWindowDragOver(e: DragEvent): void {
   if (dragDepth > 0) e.preventDefault()
 }
 
-function onWindowDragLeave(e: DragEvent): void {
+function onWindowDragLeave(_e: DragEvent): void {
   if (dragDepth === 0) return
   dragDepth = Math.max(0, dragDepth - 1)
   if (dragDepth === 0) windowDragging.value = false
@@ -797,11 +812,38 @@ onUnmounted(() => {
   revokePreviews()
 })
 
-// 单张上传 + 写记录；失败仅把该任务标记为 error，由调用方决定是否继续
+// 单张上传 + 入批量落库队列；失败仅把该任务标记为 error，由调用方决定是否继续
 async function uploadSingle(t: UploadTask): Promise<void> {
   if (!t.file) return
   t.status = 'uploading'
   t.progress = 0
+
+  // 秒传查重：本会话已传过相同内容时直接复用链接，跳过网络上传
+  if (t.contentHash) {
+    const hit = lookupHash(t.contentHash)
+    if (hit) {
+      t.progress = 100
+      const uploadInfo: UploadInfo = {
+        url: hit.url,
+        urlOriginal: toCnbUrl(hit.url.replace('/api/img/', '/-/imgs/')),
+        thumbnailUrl: hit.thumbnailUrl || '',
+        name: t.rawName,
+        size: hit.size,
+        type: hit.type,
+        compressionRatio: t.compressionRatio,
+        width: t.width,
+        height: t.height,
+        hasThumbnail: !!hit.thumbnailUrl,
+        thumbnailWidth: t.thumbnailWidth,
+        thumbnailHeight: t.thumbnailHeight,
+        thumbnailSize: t.thumbnailSize,
+        recordId: hit.recordId,
+      }
+      emit('update:uploadInfo', uploadInfo)
+      t.status = 'success'
+      return
+    }
+  }
 
   try {
     const formData = new FormData()
@@ -817,7 +859,7 @@ async function uploadSingle(t: UploadTask): Promise<void> {
           t.progress = Math.round((e.loaded / e.total) * 100)
         }
       },
-      timeout: 30000,
+      timeout: 60000,
     })
 
     if (data.code !== 0) {
@@ -846,8 +888,22 @@ async function uploadSingle(t: UploadTask): Promise<void> {
     emit('update:uploadInfo', uploadInfo)
     t.status = 'success'
 
-    // 保存上传记录到 KV（同站点接口直接写入）
-    const record = {
+    // 登记秒传缓存：同内容再传直接命中
+    if (t.contentHash) {
+      rememberHash(t.contentHash, {
+        url: data.data.url,
+        thumbnailUrl: thumbnailUrl || undefined,
+        recordId,
+        name: t.rawName,
+        size: t.file.size,
+        type: t.file.type,
+        createdAt: Date.now(),
+      })
+    }
+
+    // 落库改为批量：上传成功先入队列，startUpload 批次结束后一次 POST /image-records
+    // { records: [...] }（50 条/批），请求数从 N 降到 N/50，也不再逐张触发 KV 限流
+    recordQueue.push({
       id: recordId,
       name: t.rawName,
       url: data.data.url,
@@ -855,21 +911,46 @@ async function uploadSingle(t: UploadTask): Promise<void> {
       size: t.file.size,
       type: t.file.type,
       createdAt: Date.now(),
-    }
-    try {
-      await axios.post('/image-records', record, { baseURL: '' })
-    } catch (recordError) {
-      console.error('保存上传记录失败:', recordError)
-      // CNB 已有文件但 KV 无记录 = 孤儿文件：入本地待补写队列，下次打开管理页自动重试
-      enqueuePendingRecord(record)
-      toast.warning(`「${t.rawName}」已上传，但链接记录保存失败，稍后打开图片列表时会自动补写`)
-    }
+      width: t.width,
+      height: t.height,
+    })
   } catch (err) {
     console.error(err)
     const error = err as { response?: { data?: { error?: string; msg?: string } }; message?: string }
     t.status = 'error'
     t.errorMsg = error.response?.data?.error || error.response?.data?.msg || error.message || '上传失败'
     errorMsg.value = `「${t.rawName}」${t.errorMsg}`
+  }
+}
+
+// 本批上传成功的记录队列：批次结束统一落库
+const recordQueue: PendingRecord[] = []
+
+// 批量落库：50 条/批对齐服务端上限；失败部分入本地补写队列（孤儿兜底）
+async function flushRecordQueue(): Promise<void> {
+  if (recordQueue.length === 0) return
+  const batches: PendingRecord[][] = []
+  for (let i = 0; i < recordQueue.length; i += BATCH_FLUSH_SIZE) {
+    batches.push(recordQueue.slice(i, i + BATCH_FLUSH_SIZE))
+  }
+  recordQueue.length = 0
+  let failed: PendingRecord[] = []
+  for (const batch of batches) {
+    try {
+      const { data } = await axios.post('/image-records', { records: batch }, { baseURL: '' })
+      if (data.code !== 0) failed = failed.concat(batch)
+    } catch {
+      failed = failed.concat(batch)
+    }
+  }
+  if (failed.length > 0) {
+    console.error('保存上传记录失败:', failed.length, '条')
+    for (const record of failed) enqueuePendingRecord(record)
+    toast.warning(
+      failed.length === 1 && failed[0]
+        ? `「${failed[0].name}」已上传，但链接记录保存失败，稍后打开图片列表时会自动补写`
+        : `${failed.length} 条链接记录保存失败，稍后打开图片列表时会自动补写`,
+    )
   }
 }
 
@@ -924,6 +1005,16 @@ async function startUpload(): Promise<void> {
 
   const okCount = tasks.value.filter((t) => t.status === 'success').length
   const failCount = tasks.value.filter((t) => t.status === 'error').length
+  uploading.value = false
+
+  // 批次收尾：成功记录统一落库（批量 50 条/批），失败部分进本地补写队列
+  await flushRecordQueue()
+  // 记录落库成功后静默对账统计，侧栏数字与最近上传以服务端为准
+  if (recordQueue.length === 0) {
+    const { refreshStats } = useGlobalStats()
+    refreshStats()
+  }
+
   if (failCount === 0) {
     toast.success(okCount > 1 ? `${okCount} 张图片全部上传成功` : '上传成功')
     // 整批成功：顶部拖拽区恢复空状态待下一批，下方任务列表（完成）保留展示

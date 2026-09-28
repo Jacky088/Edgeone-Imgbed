@@ -43,6 +43,27 @@
 - **前端**: Vue 3 + TypeScript + Vite + TailwindCSS
 - **后端**: EdgeOne Pages Node Functions + Express.js
 - **上传**: Multer + CNB 对象存储服务
+- **记录存储**: EdgeOne KV（全量索引 + 批量写 + 服务端分页）
+
+## 🏗️ 架构概览
+
+```
+浏览器 (Vue 3 SPA)
+  │  multipart 上传            │  REST 管理记录
+  ▼                            ▼
+Node Functions (/api)         EdgeOne Pages Functions (/image-records, KV 绑定)
+  ├─ /upload/img  ── PUT ──► CNB 对象存储（imgslimgs 仓库）
+  ├─ /upload/picgo（PicGo Basic Auth）
+  ├─ /img/<path>  ◄── GET ──  CNB 源站（同源校验 + 流式代理 + 长缓存）
+  └─ /auth/*（HMAC token 签发/校验，auth/status 探测密码开关）
+                               │
+                               ▼
+                    EdgeOne KV：image_<id> 记录本体
+                                + image_records_index 全量索引
+```
+
+图片直链统一走 `BASE_IMG_URL/api/img/<path>` 代理输出；上传记录由前端批量（50 条/批）
+写入 KV，读取时优先命中索引 key，避免逐 key 全表扫描。
 
 ------------------------------------------------------------------------
 
@@ -62,6 +83,15 @@ pnpm dev
 
 访问后打开浏览器：http://localhost:5173
 
+### 🧪 质量检查
+
+``` bash
+pnpm lint            # ESLint
+pnpm type-check      # 前端 vue-tsc
+pnpm type-check:node # 后端 Node Functions tsc
+pnpm test            # Vitest 单元测试（纯函数 + KV 集成逻辑）
+```
+
 ------------------------------------------------------------------------
 
 ### 一键部署
@@ -79,8 +109,11 @@ pnpm dev
     SLUG_IMG=CNB 对象存储仓库名（格式：用户名/仓库名）
     TOKEN_IMG=CNB 仓库访问令牌
     SITE_PASSWORD=访问密码（可选）
-    AUTH_SECRET=访问令牌签名密钥（可选，建议为随机长字符串；不设置时自动从 SITE_PASSWORD 派生）
+    AUTH_SECRET=访问令牌签名密钥（可选，建议为随机长字符串；不设置时自动从 SITE_PASSWORD 派生。
+        注意：修改 SITE_PASSWORD 或 AUTH_SECRET 会立即使所有已签发的登录令牌失效，口令泄露时可用此方式强制全端下线）
     PICGO_TOKEN=PicGo 上传接口令牌（可选，设置后启用 /api/upload/picgo 接口）
+    MAX_UPLOAD_MB=单文件大小上限（可选，默认 25，最大 100）
+    UPLOAD_RATE_LIMIT=上传限流（可选，次/分钟/IP，默认 120）
 
 ### KV 上传记录配置
 
