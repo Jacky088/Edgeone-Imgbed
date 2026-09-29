@@ -340,10 +340,6 @@ export async function deleteAcrossStorages(urls: string[], paths: string[]): Pro
 
 // ---------------------------------------------------------------- 分桶用量（记录派生）
 
-interface S3ErrorLike {
-  code?: string
-}
-
 export interface S3BackendUsage {
   id: string
   label: string
