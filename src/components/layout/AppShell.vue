@@ -23,6 +23,17 @@ import { useStorageUsage, cnbUsageErrorText } from '@/composables/useStorageUsag
 // S3 桶配额使用率（%）：>90 红、>80 橙的判定基准
 const usagePct = (b: { usedBytes?: number; quotaBytes?: number | null }) =>
   b.quotaBytes ? Math.round(((b.usedBytes || 0) / b.quotaBytes) * 100) : 0
+
+// 侧栏存储卡跟随当前上传目标（与顶栏下拉、首页统计卡一致）：
+// CNB → 主块显示官方接口实测数据（徽章「实测」）；S3 桶 → 显示记录累计（徽章「累计」）；
+// 未成为当前目标的后端折叠为下方次行
+const effectiveBackend = computed(() => s3Backends.value.find((b) => b.id === effectiveId.value))
+const otherS3Backends = computed(() => s3Backends.value.filter((b) => b.id !== effectiveId.value))
+// CNB 折叠为次行时的展示数据（images 不可读时回退组织用量）
+const cnbRowBytes = computed(
+  () => cnbUsage.value?.images?.usedBytes ?? cnbUsage.value?.object?.usedBytes ?? 0,
+)
+const cnbRowCount = computed(() => cnbUsage.value?.images?.count ?? null)
 import { useBucket } from '@/composables/useBucket'
 import { startCloudSettingsSync } from '@/composables/useCloudSettingsSync'
 import { formatCompactSize } from '@/utils/format'
@@ -35,7 +46,7 @@ const showAbout = ref(false)
 // 全站统计与桶名由 AppShell 统一拉取：所有页面侧栏/顶栏一致，无需各页面传入
 const { stats: globalStats, fetchStats } = useGlobalStats()
 const { status: usageState, data: usageData, errorMsg: usageError, fetchUsage } = useStorageUsage()
-const { fetchBucket } = useBucket()
+const { fetchBucket, effectiveId } = useBucket()
 onMounted(() => {
   fetchStats()
   fetchBucket()
@@ -245,22 +256,31 @@ const handleLogout = () => {
           </div>
         </div>
 
-        <!-- 存储卡：数据全部来自 CNB 官方接口（图片总量 = slug_img 资产汇总；配额 = 组织总额度） -->
+        <!-- 存储卡：主块跟随当前上传目标；数据来源随目标不同（CNB=官方实测，S3=记录累计） -->
         <div class="card p-5">
           <div class="flex items-center gap-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
             <Database class="h-4 w-4 text-gray-400 dark:text-gray-500" />
             存储空间
             <span
               v-if="usageState === 'ok'"
-              title="占用为 CNB 仓库图片总量之和，配额为 CNB 组织存储额度"
-              class="ml-auto rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300"
+              :title="
+                effectiveId === 'cnb'
+                  ? '占用为 CNB 仓库图片总量之和，配额为 CNB 组织存储额度（官方接口实测）'
+                  : '按上传记录累计统计（含回收站），配额为桶设置的空间配额'
+              "
+              class="ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+              :class="
+                effectiveId === 'cnb'
+                  ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300'
+                  : 'bg-sky-50 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300'
+              "
             >
-              实测
+              {{ effectiveId === 'cnb' ? '实测' : '累计' }}
             </span>
           </div>
 
-          <!-- 读取成功：图片总量 / 组织配额（CNB 部分） -->
-          <template v-if="usageState === 'ok' && cnbAvailable">
+          <!-- 当前目标 = CNB：官方接口实测的图片总量 / 组织配额 -->
+          <template v-if="usageState === 'ok' && effectiveId === 'cnb' && cnbAvailable">
             <p class="mt-1.5 text-center text-[15px] font-bold tabular-nums text-gray-900 dark:text-white">
               {{ formatCompactSize(usedBytes) }}
               <span class="font-semibold text-gray-400 dark:text-gray-500">/ {{ quotaLabel }}</span>
@@ -277,7 +297,28 @@ const handleLogout = () => {
             </p>
           </template>
 
-          <!-- CNB 部分降级：显示原因（S3 桶行不受影响） -->
+          <!-- 当前目标 = S3 桶：记录累计用量 / 桶配额 -->
+          <template v-else-if="usageState === 'ok' && effectiveId !== 'cnb'">
+            <template v-if="effectiveBackend">
+              <p
+                class="mt-1.5 text-center text-[15px] font-bold tabular-nums"
+                :class="usagePct(effectiveBackend) >= 90 ? 'text-red-500 dark:text-red-400' : usagePct(effectiveBackend) >= 80 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-900 dark:text-white'"
+              >
+                {{ formatCompactSize(effectiveBackend.usedBytes || 0) }}
+                <span class="font-semibold text-gray-400 dark:text-gray-500">
+                  / {{ effectiveBackend.quotaBytes ? formatCompactSize(effectiveBackend.quotaBytes) : '♾️' }}
+                </span>
+              </p>
+              <p class="mt-0.5 text-center text-[11px] font-semibold text-gray-400 dark:text-gray-500">
+                共 {{ effectiveBackend.count ?? 0 }} 张图片
+              </p>
+            </template>
+            <p v-else class="mt-1.5 text-center text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+              该桶用量数据暂不可用，请刷新重试
+            </p>
+          </template>
+
+          <!-- 当前目标 = CNB 但官方接口降级：显示原因 -->
           <p
             v-else-if="usageState === 'ok'"
             class="mt-1.5 text-center text-[11px] font-semibold leading-relaxed text-amber-600 dark:text-amber-400"
@@ -297,8 +338,9 @@ const handleLogout = () => {
           </button>
           <p v-else class="mt-1.5 text-center text-[15px] font-bold text-gray-300 dark:text-gray-600">读取中…</p>
 
+          <!-- 进度条 + 百分比：CNB 用组织配额，S3 用桶配额（>80% 橙 / >90% 红） -->
           <div
-            v-if="usageState === 'ok' && cnbAvailable"
+            v-if="usageState === 'ok' && effectiveId === 'cnb' && cnbAvailable"
             class="mt-2 h-[7px] overflow-hidden rounded-full bg-indigo-50 dark:bg-gray-800"
             role="progressbar"
             :aria-valuenow="quotaPct"
@@ -311,16 +353,47 @@ const handleLogout = () => {
               :style="{ width: `${quotaPct}%` }"
             />
           </div>
-          <p v-if="usageState === 'ok' && cnbAvailable" class="mt-1 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
+          <p v-if="usageState === 'ok' && effectiveId === 'cnb' && cnbAvailable" class="mt-1 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
             {{ quotaPct }}%
           </p>
+          <template v-if="usageState === 'ok' && effectiveId !== 'cnb' && effectiveBackend?.quotaBytes">
+            <div class="mt-2 h-[7px] overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800" role="progressbar" :aria-valuenow="usagePct(effectiveBackend)" aria-valuemin="0" aria-valuemax="100" :aria-label="`存储已用 ${usagePct(effectiveBackend)}%`">
+              <div
+                class="h-full rounded-full transition-all duration-500"
+                :class="usagePct(effectiveBackend) >= 90 ? 'bg-red-500' : usagePct(effectiveBackend) >= 80 ? 'bg-amber-500' : 'bg-gradient-to-r from-indigo-500 to-violet-500'"
+                :style="{ width: `${Math.min(100, usagePct(effectiveBackend))}%` }"
+              />
+            </div>
+            <p class="mt-1 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
+              {{ usagePct(effectiveBackend) }}%
+            </p>
+          </template>
 
-          <!-- S3 桶用量行（记录派生累计，配额进度条：>80% 橙 / >90% 红 / 未设配额 ♾️） -->
+          <!-- 其余后端折叠为次行（当前目标是 S3 时 CNB 也降为次行） -->
           <div
-            v-if="usageState === 'ok' && s3Backends.length > 0"
+            v-if="usageState === 'ok' && (effectiveId !== 'cnb' || otherS3Backends.length > 0)"
             class="mt-3 flex flex-col gap-2.5 border-t border-gray-100 pt-3 dark:border-gray-800"
           >
-            <div v-for="b in s3Backends" :key="b.id">
+            <!-- CNB 次行 -->
+            <div v-if="effectiveId !== 'cnb'" class="flex items-center justify-between gap-2 text-[11px]">
+              <span class="min-w-0 truncate font-semibold text-gray-600 dark:text-gray-300">CNB 对象存储</span>
+              <span
+                v-if="cnbAvailable"
+                class="shrink-0 tabular-nums text-gray-400 dark:text-gray-500"
+                title="CNB 仓库图片总量（官方接口实测）"
+              >
+                {{ formatCompactSize(cnbRowBytes) }}<template v-if="cnbRowCount !== null"> · {{ cnbRowCount }} 张</template>
+              </span>
+              <span
+                v-else
+                class="shrink-0 font-semibold text-amber-600 dark:text-amber-400"
+                :title="cnbUsageErrorText(cnbUsage)"
+              >
+                {{ cnbUsageErrorText(cnbUsage) }}
+              </span>
+            </div>
+            <!-- 其他 S3 桶行 -->
+            <div v-for="b in otherS3Backends" :key="b.id">
               <div class="flex items-center justify-between gap-2 text-[11px]">
                 <span class="min-w-0 truncate font-semibold text-gray-600 dark:text-gray-300" :title="b.label">
                   {{ b.label }}
