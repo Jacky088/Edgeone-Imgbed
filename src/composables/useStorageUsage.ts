@@ -1,21 +1,45 @@
 import { ref } from 'vue'
 import axios from '@/utils/axios'
 
-// 与 node-functions/api/_utils.ts 的 CnbStorageUsage 对应
-export interface CnbStorageUsage {
-  /** 本仓库图片总量（slug_img 资产 size_in_byte 之和）；清单不可读时为 null */
-  images: { count: number; usedBytes: number; truncated?: boolean } | null
-  /** 图片清单读取失败原因（images 为 null 时有值） */
+// 与 node-functions /api/storage/usage 的多存储返回对应：
+//   cnb：CNB 官方接口（图片清单 + 组织用量/额度），available=false 时带降级原因
+//   backends：各 S3 桶的 ListObjectsV2 汇总（无配额概念，仅已用体积与对象数）
+export interface CnbImagesUsage {
+  count: number
+  usedBytes: number
+  truncated?: boolean
+}
+
+export interface CnbUsagePart {
+  available: boolean
+  reason?: string
+  detail?: string
+  images?: CnbImagesUsage | null
   imagesReason?: string
-  /** 组织对象存储用量/额度（含 git lfs、制品、附件） */
-  object: { usedBytes: number; quotaBytes: number | null; freeBytes: number | null }
-  /** 组织 git 存储用量/额度（不含 lfs） */
-  git: { usedBytes: number; quotaBytes: number | null; freeBytes: number | null }
+  object?: { usedBytes: number; quotaBytes: number | null; freeBytes: number | null }
+  git?: { usedBytes: number; quotaBytes: number | null; freeBytes: number | null }
+}
+
+export interface S3BackendUsage {
+  id: string
+  label: string
+  available: boolean
+  reason?: string
+  usedBytes?: number
+  count?: number
+  /** 空间配额（字节）；null = 不限 ♾️ */
+  quotaBytes?: number | null
+  truncated?: boolean
+}
+
+export interface StorageUsageData {
+  cnb: CnbUsagePart
+  backends: S3BackendUsage[]
 }
 
 type UsageStatus = 'idle' | 'loading' | 'ok' | 'error'
 
-// 后端 reason → 用户可读的具体原因（对应 node-functions /api/storage/usage 的返回）
+// 后端 reason → 用户可读的具体原因（对应 /api/storage/usage 的返回）
 const REASON_MSG: Record<string, string> = {
   forbidden: '访问令牌缺少 group-resource:r 权限',
   'missing-env': '服务端未配置 SLUG_IMG 或 TOKEN_IMG',
@@ -23,9 +47,16 @@ const REASON_MSG: Record<string, string> = {
   network: 'CNB 容量接口连接失败',
 }
 
+/** CNB 部分降级原因 → 用户可读文案（侧栏/设置页共用） */
+export function cnbUsageErrorText(part: CnbUsagePart | null | undefined): string {
+  if (!part) return 'CNB 容量接口不可用'
+  const base = (part.reason && REASON_MSG[part.reason]) || 'CNB 容量接口不可用'
+  return part.detail ? `${base}（${part.detail}）` : base
+}
+
 // 模块级单例：全站侧栏共用一次探测结果
 const status = ref<UsageStatus>('idle')
-const data = ref<CnbStorageUsage | null>(null)
+const data = ref<StorageUsageData | null>(null)
 const errorMsg = ref('')
 let started = false // 本会话已发起过首次加载；失败后仍可通过 fetchUsage(true) 重试
 
@@ -39,17 +70,22 @@ export function useStorageUsage() {
       const { data: resp } = await axios.get('/storage/usage', {
         params: force ? { refresh: 1 } : undefined,
       })
-      if (resp?.code === 0 && resp.data?.available) {
-        data.value = resp.data as CnbStorageUsage
+      if (resp?.code === 0 && resp.data?.cnb) {
+        data.value = {
+          cnb: resp.data.cnb as CnbUsagePart,
+          backends: Array.isArray(resp.data.backends) ? resp.data.backends : [],
+        }
         status.value = 'ok'
       } else {
-        const base = REASON_MSG[resp?.data?.reason] || resp?.msg || 'CNB 容量接口不可用'
+        const base = resp?.data?.cnb?.reason
+          ? REASON_MSG[resp.data.cnb.reason] || resp?.msg || 'CNB 容量接口不可用'
+          : resp?.msg || '容量接口不可用'
         // detail 为后端附加的诊断信息（如 CNB 真实 HTTP 状态码）
-        errorMsg.value = resp?.data?.detail ? `${base}（${resp.data.detail}）` : base
+        errorMsg.value = resp?.data?.cnb?.detail ? `${base}（${resp.data.cnb.detail}）` : base
         status.value = 'error'
       }
     } catch {
-      errorMsg.value = 'CNB 容量读取失败，请检查令牌权限后重试'
+      errorMsg.value = '容量读取失败，请检查令牌权限后重试'
       status.value = 'error'
     }
   }

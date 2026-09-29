@@ -1,27 +1,37 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   CloudUpload,
   GalleryVertical,
   Settings,
-  Info,
   LogOut,
   Cloud,
   Github,
   Archive,
   Link2,
   Database,
+  SearchCode,
+  Info,
 } from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import BucketBadge from '@/components/BucketBadge.vue'
+import AboutModal from '@/components/AboutModal.vue'
 import { useGlobalStats } from '@/composables/useGlobalStats'
-import { useStorageUsage } from '@/composables/useStorageUsage'
+import { useStorageUsage, cnbUsageErrorText } from '@/composables/useStorageUsage'
+
+// S3 桶配额使用率（%）：>90 红、>80 橙的判定基准
+const usagePct = (b: { usedBytes?: number; quotaBytes?: number | null }) =>
+  b.quotaBytes ? Math.round(((b.usedBytes || 0) / b.quotaBytes) * 100) : 0
 import { useBucket } from '@/composables/useBucket'
+import { startCloudSettingsSync } from '@/composables/useCloudSettingsSync'
 import { formatCompactSize } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
+
+// 关于项目弹窗（顶栏右上角入口）
+const showAbout = ref(false)
 // 全站统计与桶名由 AppShell 统一拉取：所有页面侧栏/顶栏一致，无需各页面传入
 const { stats: globalStats, fetchStats } = useGlobalStats()
 const { status: usageState, data: usageData, errorMsg: usageError, fetchUsage } = useStorageUsage()
@@ -30,6 +40,8 @@ onMounted(() => {
   fetchStats()
   fetchBucket()
   fetchUsage()
+  // 站点设置云端同步：登录即拉取（覆盖本地），改动防抖回写，全设备一致
+  startCloudSettingsSync()
 })
 
 // 回收站待处理数量角标（stats 全站共享，上传/删除后自动刷新）
@@ -54,8 +66,8 @@ const menu = computed(() => [
     active: route.name === 'admin' && route.query.view === 'trash',
     badge: trashBadge.value,
   },
+  { label: '孤儿清理', icon: SearchCode, to: '/orphan', active: route.name === 'orphan' },
   { label: '我的设置', icon: Settings, to: '/settings', active: route.name === 'settings' },
-  { label: '关于项目', icon: Info, to: '/about', active: route.name === 'about' },
 ])
 
 // header 展示当前页面标题（大屏左侧品牌区已有站名，避免重复）
@@ -64,19 +76,22 @@ const pageTitle = computed(() => {
   return menu.value.find((item) => item.active)?.label || 'CNB图床'
 })
 
-// 侧栏存储卡：全部来自 CNB 官方接口实测，无浏览器端手动配额。
-// 占用 = 本仓库图片总量之和（slug_img 资产汇总）；配额 = 组织存储总额度（对象存储 + git）。
+// 侧栏存储卡：CNB 来自官方接口实测（图片清单 + 组织用量/额度）；
+// S3 桶为 ListObjectsV2 汇总（无配额概念，仅展示已用）。
 // 读取失败时显示错误提示，可点击重试（refresh=1 绕过服务端 10 分钟缓存）。
+const cnbUsage = computed(() => usageData.value?.cnb ?? null)
+const cnbAvailable = computed(() => cnbUsage.value?.available === true)
+const s3Backends = computed(() => usageData.value?.backends ?? [])
 const usedBytes = computed(() => {
-  const u = usageData.value
-  if (!u) return 0
-  return u.images?.usedBytes ?? u.object.usedBytes + u.git.usedBytes
+  const u = cnbUsage.value
+  if (!u?.available) return 0
+  return u.images?.usedBytes ?? (u.object?.usedBytes ?? 0) + (u.git?.usedBytes ?? 0)
 })
-const usedCount = computed(() => usageData.value?.images?.count ?? null)
+const usedCount = computed(() => cnbUsage.value?.images?.count ?? null)
 const quotaBytes = computed(() => {
-  const u = usageData.value
-  if (!u) return 0
-  return (u.object.quotaBytes ?? 0) + (u.git.quotaBytes ?? 0)
+  const u = cnbUsage.value
+  if (!u?.available) return 0
+  return (u.object?.quotaBytes ?? 0) + (u.git?.quotaBytes ?? 0)
 })
 const quotaLabel = computed(() => (quotaBytes.value > 0 ? formatCompactSize(quotaBytes.value) : '未知'))
 const quotaPct = computed(() =>
@@ -244,8 +259,8 @@ const handleLogout = () => {
             </span>
           </div>
 
-          <!-- 读取成功：图片总量 / 组织配额 -->
-          <template v-if="usageState === 'ok'">
+          <!-- 读取成功：图片总量 / 组织配额（CNB 部分） -->
+          <template v-if="usageState === 'ok' && cnbAvailable">
             <p class="mt-1.5 text-center text-[15px] font-bold tabular-nums text-gray-900 dark:text-white">
               {{ formatCompactSize(usedBytes) }}
               <span class="font-semibold text-gray-400 dark:text-gray-500">/ {{ quotaLabel }}</span>
@@ -254,13 +269,22 @@ const handleLogout = () => {
               共 {{ usedCount }} 张图片
             </p>
             <p
-              v-if="usageData?.images === null"
+              v-if="cnbUsage?.images === null"
               class="mt-1 text-center text-[11px] font-semibold text-amber-600 dark:text-amber-400"
               :title="usageError || '访问令牌缺少 repo-manage:r 权限'"
             >
               图片总量不可读，已改用组织用量
             </p>
           </template>
+
+          <!-- CNB 部分降级：显示原因（S3 桶行不受影响） -->
+          <p
+            v-else-if="usageState === 'ok'"
+            class="mt-1.5 text-center text-[11px] font-semibold leading-relaxed text-amber-600 dark:text-amber-400"
+            :title="cnbUsageErrorText(cnbUsage)"
+          >
+            {{ cnbUsageErrorText(cnbUsage) }}
+          </p>
 
           <!-- 读取失败：错误提示 + 点击重试（refresh=1 绕过服务端缓存） -->
           <button
@@ -274,7 +298,7 @@ const handleLogout = () => {
           <p v-else class="mt-1.5 text-center text-[15px] font-bold text-gray-300 dark:text-gray-600">读取中…</p>
 
           <div
-            v-if="usageState === 'ok'"
+            v-if="usageState === 'ok' && cnbAvailable"
             class="mt-2 h-[7px] overflow-hidden rounded-full bg-indigo-50 dark:bg-gray-800"
             role="progressbar"
             :aria-valuenow="quotaPct"
@@ -287,9 +311,35 @@ const handleLogout = () => {
               :style="{ width: `${quotaPct}%` }"
             />
           </div>
-          <p v-if="usageState === 'ok'" class="mt-1 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
+          <p v-if="usageState === 'ok' && cnbAvailable" class="mt-1 text-right text-[11px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
             {{ quotaPct }}%
           </p>
+
+          <!-- S3 桶用量行（记录派生累计，配额进度条：>80% 橙 / >90% 红 / 未设配额 ♾️） -->
+          <div
+            v-if="usageState === 'ok' && s3Backends.length > 0"
+            class="mt-3 flex flex-col gap-2.5 border-t border-gray-100 pt-3 dark:border-gray-800"
+          >
+            <div v-for="b in s3Backends" :key="b.id">
+              <div class="flex items-center justify-between gap-2 text-[11px]">
+                <span class="min-w-0 truncate font-semibold text-gray-600 dark:text-gray-300" :title="b.label">
+                  {{ b.label }}
+                </span>
+                <span class="shrink-0 tabular-nums" :class="usagePct(b) >= 90 ? 'font-semibold text-red-500 dark:text-red-400' : usagePct(b) >= 80 ? 'font-semibold text-amber-600 dark:text-amber-400' : 'text-gray-400 dark:text-gray-500'">
+                  <template v-if="b.quotaBytes">{{ formatCompactSize(b.usedBytes || 0) }} / {{ formatCompactSize(b.quotaBytes) }}</template>
+                  <template v-else>{{ formatCompactSize(b.usedBytes || 0) }} <span title="未设配额">♾️</span></template>
+                  <template v-if="b.count != null"> · {{ b.count }} 张</template>
+                </span>
+              </div>
+              <div v-if="b.quotaBytes" class="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
+                <div
+                  class="h-full rounded-full transition-all duration-500"
+                  :class="usagePct(b) >= 90 ? 'bg-red-500' : usagePct(b) >= 80 ? 'bg-amber-500' : 'bg-gradient-to-r from-indigo-500 to-violet-500'"
+                  :style="{ width: `${Math.min(100, usagePct(b))}%` }"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </aside>
 
@@ -302,12 +352,21 @@ const handleLogout = () => {
             <div class="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl brand-gradient text-white shadow-lg shadow-indigo-500/25 ring-1 ring-white/20 lg:hidden">
               <Cloud class="h-5 w-5" :stroke-width="2.5" />
             </div>
-            <span class="truncate text-base font-bold tracking-tight text-gray-900 dark:text-white sm:text-lg">{{ pageTitle }}</span>
+            <!-- 页面标题：窄屏隐藏（底部标签栏已高亮当前页），给桶选择器让位 -->
+            <span class="hidden truncate text-base font-bold tracking-tight text-gray-900 sm:inline sm:text-lg dark:text-white">{{ pageTitle }}</span>
           </div>
 
           <div class="flex shrink-0 items-center gap-1.5 sm:gap-2">
             <BucketBadge />
             <ThemeToggle compact />
+            <!-- 关于项目（与主题按钮同款图标风格，位于主题之后） -->
+            <button
+              @click="showAbout = true"
+              class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-gray-500 transition-all hover:bg-gray-100 hover:text-indigo-600 active:scale-95 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-indigo-300"
+              title="关于项目"
+            >
+              <Info class="h-[18px] w-[18px]" />
+            </button>
             <button
               @click="handleLogout"
               class="group relative flex h-9 w-9 items-center justify-center rounded-xl text-gray-600 transition-all hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 sm:w-auto sm:px-3 sm:text-sm sm:font-medium"
@@ -353,6 +412,9 @@ const handleLogout = () => {
           </RouterLink>
         </nav>
       </div>
+
+      <!-- 关于项目弹窗 -->
+      <AboutModal :open="showAbout" @close="showAbout = false" />
     </div>
   </div>
 </template>

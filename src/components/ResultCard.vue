@@ -51,9 +51,17 @@ const previewSrc = computed(() => props.info.thumbnailUrl || props.info.url)
 
 const onPreviewError = (e: Event) => {
   const img = e.target as HTMLImageElement
-  if (img.src === props.info.thumbnailUrl && props.info.url) {
+  // img.src 恒为浏览器解析后的绝对 URL：相对路径（BASE_IMG_URL 缺失）下必须归一后再比较，否则回退链失效
+  const abs = (u?: string) => {
+    try {
+      return new URL(u || '', location.href).href
+    } catch {
+      return u || ''
+    }
+  }
+  if (abs(props.info.thumbnailUrl) === img.src && props.info.url) {
     img.src = props.info.url
-  } else if (img.src === props.info.url && props.info.urlOriginal) {
+  } else if (abs(props.info.url) === img.src && props.info.urlOriginal) {
     img.src = props.info.urlOriginal || ''
   }
 }

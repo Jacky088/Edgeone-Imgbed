@@ -1,158 +1,115 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import axios from '@/utils/axios'
-import { Settings, RotateCcw, Images, Copy, Ruler, FileText, Rows3, Type, SearchCode, Trash2 } from 'lucide-vue-next'
+import { computed, onMounted, ref, watch } from 'vue'
+import {
+  Settings,
+  RotateCcw,
+  Images,
+  Copy,
+  Ruler,
+  FileText,
+  Rows3,
+  Type,
+  HardDrive,
+  Plus,
+  Pencil,
+  Trash2,
+  Loader2,
+} from 'lucide-vue-next'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import AppShell from '@/components/layout/AppShell.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import StorageBucketModal from '@/components/StorageBucketModal.vue'
 import { useUploadSettings, PAGE_SIZE_OPTIONS, type CopyFormat, type NamingRule } from '@/composables/useUploadSettings'
-import { useStorageUsage } from '@/composables/useStorageUsage'
-import { formatCompactSize } from '@/utils/format'
+import { useStorageBuckets, type StorageBucketView } from '@/composables/useStorageBuckets'
+import { useBucket } from '@/composables/useBucket'
+import { useTheme } from '@/composables/useTheme'
+import { isSyncApplying } from '@/composables/useCloudSettingsSync'
 import { toast } from 'vue-sonner'
 
 // 上传压缩为浏览器端 WebP 管线，仅调整参数，不改变上传接口行为
 const { settings, resetSettings } = useUploadSettings()
-// 孤儿清理成功后强制刷新侧栏存储卡（refresh=1 绕过服务端 10 分钟缓存）
-const { fetchUsage } = useStorageUsage()
+const { theme } = useTheme()
 
-// ===== CNB 孤儿文件扫描（平台资产清单 vs 上传记录）=====
-interface OrphanAsset {
-  path: string
-  size: number
-  createdAt: string
-}
-const scanState = ref<'idle' | 'scanning' | 'done' | 'error'>('idle')
-const scanMsg = ref('')
-const scanMeta = ref<{ scanned: number; otherTypes: number; truncated: boolean } | null>(null)
-const orphans = ref<OrphanAsset[]>([])
-const orphanPurging = ref(false)
-
-const orphanTotalSize = computed(() => orphans.value.reduce((sum, o) => sum + (o.size || 0), 0))
-
-// 结果排序（时间 / 大小，倒序）
-const orphanSort = ref<'time' | 'size'>('time')
-
-// 展示与图片列表一致的卡片网格；缩略图(_thumb.webp)与主图同生共死，主图已在列表时隐藏避免重复卡片
-const displayOrphans = computed(() => {
-  const visible = orphans.value.filter((o) => {
-    if (!/_thumb\.webp$/.test(o.path)) return true
-    const main = o.path.replace(/_thumb\.webp$/, '')
-    return !orphans.value.some((x) => x.path === main)
-  })
-  return [...visible].sort((a, b) => {
-    if (orphanSort.value === 'size') return (b.size || 0) - (a.size || 0)
-    return (Date.parse(b.createdAt || '') || 0) - (Date.parse(a.createdAt || '') || 0)
-  })
-})
-const hiddenThumbCount = computed(() => orphans.value.length - displayOrphans.value.length)
-
-// 部分勾选清理（Set 内部变更不触发响应式，用版本号驱动 computed）
-const selectedOrphans = ref<Set<string>>(new Set())
-const orphanSelectionVersion = ref(0)
-const isSelectedOrphan = (path: string) => selectedOrphans.value.has(path)
-const toggleOrphan = (path: string) => {
-  if (selectedOrphans.value.has(path)) selectedOrphans.value.delete(path)
-  else selectedOrphans.value.add(path)
-  orphanSelectionVersion.value++
-}
-const clearOrphanSelection = () => {
-  selectedOrphans.value.clear()
-  orphanSelectionVersion.value++
-}
-const selectedOrphanCount = computed(() => {
-  void orphanSelectionVersion.value
-  return selectedOrphans.value.size
-})
-// 勾选主图清理时连带其缩略图（_thumb.webp 与主图同生共死）
-const expandSelectedWithThumbs = (): OrphanAsset[] => {
-  const all = new Map(orphans.value.map((o) => [o.path, o]))
-  const out: OrphanAsset[] = []
-  const push = (p: string) => {
-    const o = all.get(p)
-    if (o && !out.some((x) => x.path === p)) out.push(o)
-  }
-  for (const p of selectedOrphans.value) {
-    push(p)
-    if (!/_thumb\.webp$/.test(p)) push(`${p}_thumb.webp`)
-  }
-  return out
-}
-
-// 代理同源输出（/api/img 白名单与上传扩展名一致），点击新窗口查看原图
-const orphanUrl = (o: OrphanAsset) => `/api/img/${o.path}`
-const orphanName = (o: OrphanAsset) => o.path.split('/').pop() || o.path
-const orphanExt = (o: OrphanAsset) => (orphanName(o).split('.').pop() || 'img').toLowerCase()
-const orphanDate = (o: OrphanAsset) => {
-  const t = Date.parse(o.createdAt || '')
-  return Number.isFinite(t) ? new Date(t).toLocaleDateString() : '—'
-}
-
-// 扫描只读不删：孤儿 = CNB 平台清单里存在、但没有任何记录（含回收站）引用的图片
-const scanOrphans = async () => {
-  if (scanState.value === 'scanning') return
-  scanState.value = 'scanning'
-  scanMsg.value = ''
-  try {
-    // 边缘函数按文件路由，必须走基础路径 + 查询参数（子路径会落到 SPA 兜底返回 HTML）
-    const { data } = await axios.get('/image-records', { baseURL: '', params: { 'cnb-assets': 1 } })
-    if (data.code === 0) {
-      orphans.value = data.data?.orphans || []
-      scanMeta.value = {
-        scanned: data.data?.scanned || 0,
-        otherTypes: data.data?.otherTypes || 0,
-        truncated: !!(data.data?.truncated || data.data?.orphansTruncated),
-      }
-      clearOrphanSelection()
-      scanState.value = 'done'
-    } else {
-      scanMsg.value = data.msg || '扫描失败'
-      scanState.value = 'error'
+// 设置变更即时生效（点击即改 + 云端同步防抖回写）；每次改动在顶部 toast「设置已保存」自动消失。
+// flush:'sync' 让回调恰在用户点击处理器内触发；云端同步回放期间 isSyncApplying() 为 true，
+// 回放触发的变更不弹提示；「恢复默认」有自己的提示，suppress 掉通用 toast 避免双弹。
+let saveToastTimer: ReturnType<typeof setTimeout> | null = null
+let suppressSaveToast = false
+watch(
+  [settings, theme],
+  () => {
+    if (isSyncApplying()) return
+    if (suppressSaveToast) {
+      suppressSaveToast = false
+      return
     }
-  } catch (e: unknown) {
-    // 兜底：非 2xx 响应也尽量取出服务端给出的具体原因
-    const err = e as { response?: { data?: { msg?: string } } }
-    scanMsg.value = err?.response?.data?.msg || '扫描失败，请检查令牌权限后重试'
-    scanState.value = 'error'
-  }
+    if (saveToastTimer) clearTimeout(saveToastTimer)
+    saveToastTimer = setTimeout(() => toast.success('设置已保存'), 500)
+  },
+  { deep: true, flush: 'sync' },
+)
+
+// ===== 多存储桶管理：列表/检测/切换默认/删除（闭环见 useStorageBuckets 注释）=====
+const { buckets, active, loading: bucketsLoading, refresh: refreshBuckets, retest, setActive, removeBucket } = useStorageBuckets()
+// 顶栏桶下拉共用 /config 上下文：默认切换/增删桶后强制刷新，徽标与菜单立即反映最新状态
+const { fetchBucket: refreshBucketContext } = useBucket()
+const bucketModalOpen = ref(false)
+const editingBucket = ref<StorageBucketView | null>(null)
+const deletingBucket = ref<StorageBucketView | null>(null)
+const deletingBucketNow = ref(false)
+const testingId = ref('')
+const switchingId = ref('')
+
+onMounted(() => {
+  refreshBuckets().catch(() => {})
+})
+
+const endpointHost = (endpoint: string) => endpoint.replace(/^https?:\/\//, '')
+
+const openAddBucket = () => {
+  editingBucket.value = null
+  bucketModalOpen.value = true
 }
-
-// 清理走 node 端删除接口（paths 直传，单次 ≤50 自动分批）；范围：全部 / 勾选项（连带缩略图）
-// 经 ConfirmDialog 应用内确认后执行，window.confirm 已弃用（与全站弹窗风格统一）
-const purgeConfirm = ref<'selected' | 'all' | null>(null)
-
-const purgeOrphans = async () => {
-  if (orphanPurging.value || !purgeConfirm.value) return
-  const scope = purgeConfirm.value
-  const targets = scope === 'all' ? orphans.value : expandSelectedWithThumbs()
-  const paths = targets.map((o) => o.path)
-  if (paths.length === 0) {
-    purgeConfirm.value = null
-    return
-  }
-  orphanPurging.value = true
-  let failed = 0
+const openEditBucket = (b: StorageBucketView) => {
+  editingBucket.value = b
+  bucketModalOpen.value = true
+}
+const handleRetest = async (b: StorageBucketView) => {
+  if (testingId.value) return
+  testingId.value = b.id
   try {
-    for (let i = 0; i < paths.length; i += 50) {
-      const batch = paths.slice(i, i + 50)
-      try {
-        // node 端点：走 axios 默认 baseURL /api
-        const { data } = await axios.post('/file/delete-cnb', { paths: batch })
-        if (data.code === 0) failed += (data.data?.failed || []).length
-        else failed += batch.length
-      } catch {
-        failed += batch.length
-      }
-    }
-    const okCount = paths.length - failed
-    if (failed === 0) toast.success(`已清理 ${okCount} 个孤儿文件`)
-    else toast.warning(`已清理 ${okCount} 个，${failed} 个删除失败（可重新扫描后重试）`)
-    clearOrphanSelection()
-    // 同步刷新：孤儿已删除，立即更新侧栏存储卡的图片总量与占用
-    await fetchUsage(true)
-    await scanOrphans()
+    const r = await retest(b.id)
+    if (r.ok) toast.success(r.message || '连接正常')
+    else toast.error(r.message || '检测失败')
   } finally {
-    orphanPurging.value = false
-    purgeConfirm.value = null
+    testingId.value = ''
+  }
+}
+const handleSetActive = async (id: string) => {
+  if (switchingId.value) return
+  switchingId.value = id
+  try {
+    const r = await setActive(id)
+    if (r.ok) {
+      toast.success(r.message || '默认存储已切换')
+      refreshBucketContext(true)
+    } else toast.error(r.message || '切换失败')
+  } finally {
+    switchingId.value = ''
+  }
+}
+const handleDeleteBucket = async () => {
+  if (!deletingBucket.value) return
+  deletingBucketNow.value = true
+  try {
+    const r = await removeBucket(deletingBucket.value.id)
+    if (r.ok) {
+      toast.success(r.message || '已删除存储桶')
+      refreshBucketContext(true)
+    } else toast.error(r.message || '删除失败')
+    deletingBucket.value = null
+  } finally {
+    deletingBucketNow.value = false
   }
 }
 
@@ -198,6 +155,7 @@ const copyFormatOptions: Array<{ value: CopyFormat; label: string }> = [
 ]
 
 const handleReset = () => {
+  suppressSaveToast = true
   resetSettings()
   toast.success('已恢复默认设置')
 }
@@ -211,399 +169,375 @@ const handleReset = () => {
           <Settings class="h-6 w-6 text-indigo-600 dark:text-indigo-400" />
           我的设置
         </h2>
-        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">上传压缩与外观偏好（保存在本机浏览器）</p>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">上传压缩与外观偏好（云端同步 · 登录即全设备一致）</p>
       </div>
 
-      <!-- 压缩模式：原始 / 质量档位 -->
-      <div class="card p-6">
-        <div class="flex flex-col gap-5">
-          <div>
-            <p class="text-sm font-bold text-gray-900 dark:text-white">图片压缩</p>
-            <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-              压缩时自动转为 WebP，质量越低体积越小；「原始」不压缩、不转换，保持原始格式和大小。
-              当前：{{ currentModeText }}（GIF 动图始终保留以维持动画）
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button
-              @click="settings.keepOriginal = true"
-              class="flex min-w-[64px] flex-col items-center rounded-xl px-3 py-2 text-sm font-bold transition-all"
-              :class="
-                settings.keepOriginal
-                  ? 'brand-gradient text-white shadow-lg shadow-indigo-500/25'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
-              "
-            >
-              <span>原始</span>
-              <span
-                class="text-[10px] font-medium"
-                :class="settings.keepOriginal ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
-              >不压缩</span>
-            </button>
-            <button
-              v-for="q in qualityOptions"
-              :key="q.value"
-              @click="pickQuality(q.value)"
-              class="flex min-w-[64px] flex-col items-center rounded-xl px-3 py-2 text-sm font-bold transition-all"
-              :class="
-                !settings.keepOriginal && settings.quality === q.value
-                  ? 'brand-gradient text-white shadow-lg shadow-indigo-500/25'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
-              "
-            >
-              <span>{{ q.label }}</span>
-              <span
-                v-if="q.hint"
-                class="text-[10px] font-medium"
-                :class="!settings.keepOriginal && settings.quality === q.value ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
-              >{{ q.hint }}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 压缩尺寸上限（原始模式下不生效） -->
-      <div class="card p-6" :class="settings.keepOriginal ? 'opacity-50' : ''">
-        <div class="flex items-start gap-3">
-          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
-            <Ruler class="h-5 w-5" />
-          </div>
-          <div class="min-w-0 flex-1">
-            <p class="text-sm font-bold text-gray-900 dark:text-white">压缩尺寸上限</p>
-            <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-              {{ settings.keepOriginal ? '原始模式下不压缩尺寸，此设置不生效' : '长边超过上限时等比缩小，进一步减小体积' }}
-            </p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <button
-                v-for="opt in maxDimensionOptions"
-                :key="opt.value"
-                @click="settings.maxDimension = opt.value"
-                class="rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
-                :class="
-                  settings.maxDimension === opt.value
-                    ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
-                "
-              >
-                {{ opt.label }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 开关组：缩略图 / 自动复制 -->
-      <div class="card p-6">
-        <div class="flex flex-col divide-y divide-gray-100/70 dark:divide-gray-800/50">
-          <!-- 缩略图 -->
-          <div class="flex items-center justify-between gap-4 pb-5">
-            <div class="flex items-start gap-3">
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
-                <Images class="h-5 w-5" />
-              </div>
-              <div>
-                <p class="text-sm font-bold text-gray-900 dark:text-white">生成缩略图链接</p>
-                <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                  关闭后仅保留原图链接，上传更快；已保存的结果卡不受影响
-                </p>
-              </div>
-            </div>
-            <button
-              role="switch"
-              :aria-checked="settings.generateThumbnail"
-              :title="settings.generateThumbnail ? '点击关闭' : '点击开启'"
-              @click="settings.generateThumbnail = !settings.generateThumbnail"
-              class="relative h-6 w-11 shrink-0 rounded-full transition-colors"
-              :class="settings.generateThumbnail ? 'brand-gradient' : 'bg-gray-300 dark:bg-gray-700'"
-            >
-              <span
-                class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform"
-                :class="settings.generateThumbnail ? 'translate-x-5' : ''"
-              ></span>
-            </button>
-          </div>
-
-          <!-- 上传后自动复制 -->
-          <div class="flex items-center justify-between gap-4 pt-5">
-            <div class="flex items-start gap-3">
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
-                <Copy class="h-5 w-5" />
-              </div>
-              <div>
-                <p class="text-sm font-bold text-gray-900 dark:text-white">上传后自动复制</p>
-                <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                  全部上传完成后，自动按下方默认格式复制链接
-                </p>
-              </div>
-            </div>
-            <button
-              role="switch"
-              :aria-checked="settings.autoCopy"
-              :title="settings.autoCopy ? '点击关闭' : '点击开启'"
-              @click="settings.autoCopy = !settings.autoCopy"
-              class="relative h-6 w-11 shrink-0 rounded-full transition-colors"
-              :class="settings.autoCopy ? 'brand-gradient' : 'bg-gray-300 dark:bg-gray-700'"
-            >
-              <span
-                class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform"
-                :class="settings.autoCopy ? 'translate-x-5' : ''"
-              ></span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 文件命名规则 + 默认复制格式 -->
-      <div class="card p-6">
-        <div class="grid gap-6 md:grid-cols-2">
-          <div>
-            <div class="flex items-center gap-2">
-              <Type class="h-4 w-4 text-indigo-500" />
-              <p class="text-sm font-bold text-gray-900 dark:text-white">文件命名规则</p>
-            </div>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">决定存储在图床里的文件名</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <button
-                v-for="opt in namingOptions"
-                :key="opt.value"
-                @click="settings.namingRule = opt.value"
-                class="flex flex-col items-center rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
-                :class="
-                  settings.namingRule === opt.value
-                    ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
-                "
-              >
-                <span>{{ opt.label }}</span>
-                <span
-                  class="text-[10px] font-medium"
-                  :class="settings.namingRule === opt.value ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
-                >{{ opt.hint }}</span>
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <div class="flex items-center gap-2">
-              <FileText class="h-4 w-4 text-indigo-500" />
-              <p class="text-sm font-bold text-gray-900 dark:text-white">默认复制格式</p>
-            </div>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">自动复制与结果卡首推的格式</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <button
-                v-for="opt in copyFormatOptions"
-                :key="opt.value"
-                @click="settings.defaultCopyFormat = opt.value"
-                class="rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
-                :class="
-                  settings.defaultCopyFormat === opt.value
-                    ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
-                "
-              >
-                {{ opt.label }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 孤儿文件扫描：CNB 平台资产清单 vs 上传记录对比 -->
-      <div class="card p-6">
-        <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-          <div class="flex items-start gap-3">
-            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-500 dark:bg-amber-900/30 dark:text-amber-400">
-              <SearchCode class="h-5 w-5" />
-            </div>
-            <div class="min-w-0">
-              <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">孤儿文件扫描</p>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                对比 CNB 平台资产清单与上传记录（含回收站），找出仓库中已无记录引用的图片；只读不删，清理前二次确认
+      <!-- 设置卡片网格：移动端单列，桌面端双列；宽卡（压缩）占满整行 -->
+      <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <!-- 压缩模式：原始 / 质量档位 -->
+        <div class="card p-6 lg:col-span-2">
+          <div class="flex flex-col gap-5">
+            <div>
+              <p class="text-sm font-bold text-gray-900 dark:text-white">图片压缩</p>
+              <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                压缩时自动转为 WebP，质量越低体积越小；「原始」不压缩、不转换，保持原始格式和大小。
+                当前：{{ currentModeText }}（GIF 动图始终保留以维持动画）
               </p>
             </div>
-          </div>
-          <div class="flex shrink-0 items-center gap-2">
-            <!-- 结果排序切换 -->
-            <div
-              v-if="scanState === 'done' && orphans.length > 0"
-              class="flex h-9 items-center gap-0.5 rounded-xl border border-gray-200 bg-white p-1 dark:border-gray-700 dark:bg-gray-800"
-            >
+            <div class="flex flex-wrap gap-2">
               <button
-                @click="orphanSort = 'time'"
-                class="rounded-lg px-2.5 text-xs font-bold transition-colors"
-                :class="orphanSort === 'time' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'"
+                @click="settings.keepOriginal = true"
+                class="flex min-w-[64px] flex-col items-center rounded-xl px-3 py-2 text-sm font-bold transition-all"
+                :class="
+                  settings.keepOriginal
+                    ? 'brand-gradient text-white shadow-lg shadow-indigo-500/25'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                "
               >
-                时间
+                <span>原始</span>
+                <span
+                  class="text-[10px] font-medium"
+                  :class="settings.keepOriginal ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
+                >不压缩</span>
               </button>
               <button
-                @click="orphanSort = 'size'"
-                class="rounded-lg px-2.5 text-xs font-bold transition-colors"
-                :class="orphanSort === 'size' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'"
+                v-for="q in qualityOptions"
+                :key="q.value"
+                @click="pickQuality(q.value)"
+                class="flex min-w-[64px] flex-col items-center rounded-xl px-3 py-2 text-sm font-bold transition-all"
+                :class="
+                  !settings.keepOriginal && settings.quality === q.value
+                    ? 'brand-gradient text-white shadow-lg shadow-indigo-500/25'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                "
               >
-                大小
+                <span>{{ q.label }}</span>
+                <span
+                  v-if="q.hint"
+                  class="text-[10px] font-medium"
+                  :class="!settings.keepOriginal && settings.quality === q.value ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
+                >{{ q.hint }}</span>
               </button>
             </div>
-            <button
-              @click="scanOrphans"
-              :disabled="scanState === 'scanning'"
-              class="flex h-9 items-center gap-1.5 rounded-xl px-4 text-xs font-bold transition-all disabled:cursor-not-allowed disabled:opacity-60"
-              :class="
-                scanState === 'scanning'
-                  ? 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500'
-                  : 'brand-gradient text-white shadow-md shadow-indigo-500/25 hover:opacity-90'
-              "
-            >
-              {{ scanState === 'scanning' ? '扫描中…' : '扫描' }}
-            </button>
           </div>
         </div>
 
-        <!-- 扫描失败 -->
-        <p v-if="scanState === 'error'" class="mt-3 text-xs font-semibold text-red-500 dark:text-red-400">
-          {{ scanMsg }}
-        </p>
-
-        <!-- 扫描结果 -->
-        <div v-if="scanState === 'done'" class="mt-4">
-          <p class="text-xs font-semibold text-gray-600 dark:text-gray-300">
-            已扫描 {{ scanMeta?.scanned || 0 }} 个平台资产
-            <template v-if="scanMeta?.otherTypes">
-              （{{ scanMeta.otherTypes }} 个非图片附件不计入）
-            </template>
-            ，发现
-            <span :class="orphans.length > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'">
-              {{ orphans.length }} 个孤儿文件
-            </span>
-            <template v-if="hiddenThumbCount > 0">（其中 {{ hiddenThumbCount }} 个为缩略图，随主图清理）</template>
-            <template v-if="orphans.length > 0">，共 {{ formatCompactSize(orphanTotalSize) }}</template>
-          </p>
-          <p v-if="scanMeta?.truncated" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
-            资产数量超过单次扫描上限，结果可能不完整，可多次执行清理后重新扫描
-          </p>
-
-          <!-- 孤儿卡片网格：样式与图片列表一致 -->
-          <div
-            v-if="displayOrphans.length > 0"
-            class="mt-3 grid max-h-[26rem] grid-cols-2 gap-3 overflow-y-auto sm:gap-4 lg:grid-cols-3 2xl:grid-cols-4"
-          >
-            <div v-for="orphan in displayOrphans" :key="orphan.path" class="card group overflow-hidden">
-              <div class="relative aspect-[4/3] overflow-hidden bg-gray-100 dark:bg-gray-800">
-                <!-- 勾选清理 -->
-                <label
-                  class="absolute left-2.5 top-2.5 z-10 flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg bg-white/90 shadow-sm backdrop-blur transition-opacity dark:bg-gray-900/80"
-                  :class="isSelectedOrphan(orphan.path) ? 'opacity-100 ring-2 ring-indigo-500' : 'opacity-80 group-hover:opacity-100'"
-                  @click.stop
-                  title="勾选后可只清理选中项"
-                >
-                  <input
-                    type="checkbox"
-                    :checked="isSelectedOrphan(orphan.path)"
-                    @change="toggleOrphan(orphan.path)"
-                    class="h-4 w-4 cursor-pointer accent-indigo-600"
-                  />
-                </label>
-                <a
-                  :href="orphanUrl(orphan)"
-                  target="_blank"
-                  rel="noopener"
-                  class="block h-full w-full cursor-zoom-in"
-                  title="点击查看原图"
-                >
-                  <img
-                    :src="orphanUrl(orphan)"
-                    :alt="orphanName(orphan)"
-                    loading="lazy"
-                    decoding="async"
-                    class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                  />
-                </a>
-                <span class="absolute bottom-2.5 left-2.5 rounded-md bg-black/45 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white backdrop-blur-sm">
-                  {{ orphanExt(orphan) }}
-                </span>
-              </div>
-              <div class="p-3">
-                <p class="truncate text-xs font-semibold text-gray-800 sm:text-sm dark:text-gray-100" :title="orphan.path">
-                  {{ orphanName(orphan) }}
-                </p>
-                <p class="mt-1 flex items-center gap-1.5 text-[11px] tabular-nums text-gray-400 dark:text-gray-500">
-                  <span>{{ formatCompactSize(orphan.size) }}</span>
-                  <span>{{ orphanDate(orphan) }}</span>
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="orphans.length > 0" class="mt-3 flex flex-wrap justify-end gap-2">
-            <button
-              v-if="selectedOrphanCount > 0"
-              @click="purgeConfirm = 'selected'"
-              :disabled="orphanPurging"
-              class="flex h-9 items-center gap-1.5 rounded-xl border border-red-200 bg-white px-4 text-xs font-bold text-red-500 transition-all hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-500/30 dark:bg-gray-900 dark:text-red-400 dark:hover:bg-red-500/10"
-            >
-              <Trash2 class="h-3.5 w-3.5" />
-              清理选中 ({{ selectedOrphanCount }})
-            </button>
-            <button
-              @click="purgeConfirm = 'all'"
-              :disabled="orphanPurging"
-              class="flex h-9 items-center gap-1.5 rounded-xl bg-red-500 px-4 text-xs font-bold text-white shadow-md shadow-red-500/20 transition-all hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Trash2 class="h-3.5 w-3.5" />
-              {{ orphanPurging ? '清理中…' : '清理全部孤儿文件' }}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 孤儿清理确认弹窗（替代原生 confirm，与全站弹窗风格统一） -->
-      <ConfirmDialog
-        :open="purgeConfirm !== null"
-        :title="`将永久删除 CNB 上的 ${purgeConfirm === 'selected' ? selectedOrphanCount : orphans.length} 个孤儿文件？`"
-        description="删除不可恢复；勾选主图清理时会连带其缩略图。"
-        confirm-text="删除"
-        :loading="orphanPurging"
-        @confirm="purgeOrphans"
-        @cancel="purgeConfirm = null"
-      />
-
-      <!-- 列表每页条数 -->
-      <div class="card p-6">
-        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+        <!-- 压缩尺寸上限（原始模式下不生效） -->
+        <div class="card p-6" :class="settings.keepOriginal ? 'opacity-50' : ''">
           <div class="flex items-start gap-3">
             <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
-              <Rows3 class="h-5 w-5" />
+              <Ruler class="h-5 w-5" />
             </div>
-            <div class="min-w-0">
-              <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">列表每页条数</p>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">图片列表分页大小：当前 {{ settings.pageSize }} 条</p>
+            <div class="min-w-[160px] flex-1">
+              <p class="text-sm font-bold text-gray-900 dark:text-white">压缩尺寸上限</p>
+              <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                {{ settings.keepOriginal ? '原始模式下不压缩尺寸，此设置不生效' : '长边超过上限时等比缩小，进一步减小体积' }}
+              </p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button
+                  v-for="opt in maxDimensionOptions"
+                  :key="opt.value"
+                  @click="settings.maxDimension = opt.value"
+                  class="rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
+                  :class="
+                    settings.maxDimension === opt.value
+                      ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                  "
+                >
+                  {{ opt.label }}
+                </button>
+              </div>
             </div>
           </div>
-          <div class="flex shrink-0 gap-2">
+        </div>
+
+        <!-- 开关组：缩略图 / 自动复制 -->
+        <div class="card p-6">
+          <div class="flex flex-col divide-y divide-gray-100/70 dark:divide-gray-800/50">
+            <!-- 缩略图 -->
+            <div class="flex items-center justify-between gap-4 pb-5">
+              <div class="flex items-start gap-3">
+                <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
+                  <Images class="h-5 w-5" />
+                </div>
+                <div>
+                  <p class="text-sm font-bold text-gray-900 dark:text-white">生成缩略图链接</p>
+                  <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                    关闭后仅保留原图链接，上传更快；已保存的结果卡不受影响
+                  </p>
+                </div>
+              </div>
+              <button
+                role="switch"
+                :aria-checked="settings.generateThumbnail"
+                :title="settings.generateThumbnail ? '点击关闭' : '点击开启'"
+                @click="settings.generateThumbnail = !settings.generateThumbnail"
+                class="relative h-6 w-11 shrink-0 rounded-full transition-colors"
+                :class="settings.generateThumbnail ? 'brand-gradient' : 'bg-gray-300 dark:bg-gray-700'"
+              >
+                <span
+                  class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform"
+                  :class="settings.generateThumbnail ? 'translate-x-5' : ''"
+                ></span>
+              </button>
+            </div>
+
+            <!-- 上传后自动复制 -->
+            <div class="flex items-center justify-between gap-4 pt-5">
+              <div class="flex items-start gap-3">
+                <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
+                  <Copy class="h-5 w-5" />
+                </div>
+                <div>
+                  <p class="text-sm font-bold text-gray-900 dark:text-white">上传后自动复制</p>
+                  <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                    全部上传完成后，自动按下方默认格式复制链接
+                  </p>
+                </div>
+              </div>
+              <button
+                role="switch"
+                :aria-checked="settings.autoCopy"
+                :title="settings.autoCopy ? '点击关闭' : '点击开启'"
+                @click="settings.autoCopy = !settings.autoCopy"
+                class="relative h-6 w-11 shrink-0 rounded-full transition-colors"
+                :class="settings.autoCopy ? 'brand-gradient' : 'bg-gray-300 dark:bg-gray-700'"
+              >
+                <span
+                  class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform"
+                  :class="settings.autoCopy ? 'translate-x-5' : ''"
+                ></span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 文件命名规则 -->
+        <div class="card p-6">
+          <div class="flex items-center gap-2">
+            <Type class="h-4 w-4 text-indigo-500" />
+            <p class="text-sm font-bold text-gray-900 dark:text-white">文件命名规则</p>
+          </div>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">决定存储在图床里的文件名</p>
+          <div class="mt-3 flex flex-wrap gap-2">
             <button
-              v-for="n in PAGE_SIZE_OPTIONS"
-              :key="n"
-              @click="settings.pageSize = n"
-              class="h-8 w-12 rounded-lg text-xs font-bold transition-all"
+              v-for="opt in namingOptions"
+              :key="opt.value"
+              @click="settings.namingRule = opt.value"
+              class="flex flex-col items-center rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
               :class="
-                settings.pageSize === n
+                settings.namingRule === opt.value
                   ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
               "
             >
-              {{ n }}
+              <span>{{ opt.label }}</span>
+              <span
+                class="text-[10px] font-medium"
+                :class="settings.namingRule === opt.value ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'"
+              >{{ opt.hint }}</span>
             </button>
           </div>
         </div>
-      </div>
 
-      <!-- 外观主题 -->
-      <div class="card p-6">
-        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-          <div class="min-w-0">
-            <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">外观主题</p>
-            <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">日间 / 夜间 / 跟随系统</p>
+        <!-- 默认复制格式 -->
+        <div class="card p-6">
+          <div class="flex items-center gap-2">
+            <FileText class="h-4 w-4 text-indigo-500" />
+            <p class="text-sm font-bold text-gray-900 dark:text-white">默认复制格式</p>
           </div>
-          <div class="shrink-0"><ThemeToggle /></div>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">自动复制与结果卡首推的格式</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              v-for="opt in copyFormatOptions"
+              :key="opt.value"
+              @click="settings.defaultCopyFormat = opt.value"
+              class="rounded-xl px-3 py-1.5 text-xs font-bold transition-all"
+              :class="
+                settings.defaultCopyFormat === opt.value
+                  ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+              "
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 存储桶管理：多桶配置 + 全局默认切换（保存即检测，检测不过不入库） -->
+        <div class="card p-6 lg:col-span-2">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <div class="flex items-start gap-3">
+              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
+                <HardDrive class="h-5 w-5" />
+              </div>
+              <div class="min-w-0">
+                <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">存储桶管理</p>
+                <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                  对象存储后端：默认 CNB；切换后新上传进入所选桶，已有图片的链接不受影响
+                </p>
+              </div>
+            </div>
+            <button
+              @click="openAddBucket"
+              class="flex h-9 shrink-0 items-center gap-1.5 self-start rounded-xl brand-gradient px-4 text-xs font-bold text-white shadow-md shadow-indigo-500/25 transition-all hover:opacity-90"
+            >
+              <Plus class="h-4 w-4" />
+              添加 S3 桶
+            </button>
+          </div>
+
+          <div class="mt-4 flex flex-col divide-y divide-gray-100/70 dark:divide-gray-800/50">
+            <!-- CNB 内置默认 -->
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3.5">
+              <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl brand-gradient text-white">
+                <Cloud class="h-4 w-4" />
+              </div>
+              <div class="min-w-[160px] flex-1">
+                <p class="flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white">
+                  CNB 对象存储
+                  <span
+                    v-if="active === 'cnb'"
+                    class="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300"
+                  >默认</span>
+                </p>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">内置存储（由 SLUG_IMG / TOKEN_IMG 环境变量配置）</p>
+              </div>
+              <button
+                v-if="active !== 'cnb'"
+                @click="handleSetActive('cnb')"
+                :disabled="switchingId === 'cnb'"
+                class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-gray-200 px-3 text-xs font-bold text-gray-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+              >
+                <Loader2 v-if="switchingId === 'cnb'" class="h-3.5 w-3.5 animate-spin" />
+                设为默认
+              </button>
+            </div>
+
+            <!-- S3 桶列表 -->
+            <div v-for="b in buckets" :key="b.id" class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3.5">
+              <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                <HardDrive class="h-4 w-4" />
+              </div>
+              <div class="min-w-[160px] flex-1">
+                <p class="flex min-w-0 items-center gap-2 text-sm font-bold text-gray-900 dark:text-white">
+                  <span class="truncate">{{ b.label }}</span>
+                  <span
+                    v-if="active === b.id"
+                    class="shrink-0 rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300"
+                  >默认</span>
+                  <span class="shrink-0 font-mono text-[10px] font-medium text-gray-400 dark:text-gray-500">s3-{{ b.id }}</span>
+                </p>
+                <p class="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">
+                  {{ endpointHost(b.endpoint) }} / {{ b.bucket }} · {{ b.pathStyle !== false ? 'Path-Style' : 'Virtual-Host' }}
+                </p>
+              </div>
+              <!-- 检测状态点 -->
+              <span
+                class="h-2 w-2 shrink-0 rounded-full"
+                :class="b.lastTestOk === true ? 'bg-emerald-500' : b.lastTestOk === false ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600'"
+                :title="b.lastTestAt ? `最近检测：${new Date(b.lastTestAt).toLocaleString()}（${b.lastTestOk ? '正常' : '异常'}）` : '未检测'"
+              ></span>
+              <div class="flex shrink-0 items-center gap-1">
+                <button
+                  v-if="active !== b.id"
+                  @click="handleSetActive(b.id)"
+                  :disabled="switchingId === b.id"
+                  class="flex h-8 items-center gap-1 rounded-lg border border-gray-200 px-2.5 text-xs font-bold text-gray-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+                >
+                  <Loader2 v-if="switchingId === b.id" class="h-3.5 w-3.5 animate-spin" />
+                  设为默认
+                </button>
+                <button
+                  @click="handleRetest(b)"
+                  :disabled="testingId === b.id"
+                  class="flex h-8 items-center gap-1 rounded-lg border border-gray-200 px-2.5 text-xs font-bold text-gray-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+                  title="重新连接检测"
+                >
+                  <Loader2 v-if="testingId === b.id" class="h-3.5 w-3.5 animate-spin" />
+                  检测
+                </button>
+                <button
+                  @click="openEditBucket(b)"
+                  class="flex h-8 items-center gap-1 rounded-lg border border-gray-200 px-2.5 text-xs font-bold text-gray-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 dark:border-gray-700 dark:text-gray-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+                >
+                  <Pencil class="h-3.5 w-3.5" />
+                  编辑
+                </button>
+                <button
+                  @click="deletingBucket = b"
+                  class="flex h-8 items-center gap-1 rounded-lg border border-red-200 px-2.5 text-xs font-bold text-red-500 transition-colors hover:bg-red-50 dark:border-red-500/30 dark:text-red-400 dark:hover:bg-red-500/10"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                  删除
+                </button>
+              </div>
+            </div>
+
+            <p v-if="bucketsLoading && buckets.length === 0" class="py-4 text-xs text-gray-400 dark:text-gray-500">加载中…</p>
+            <p v-else-if="buckets.length === 0" class="py-4 text-xs leading-relaxed text-gray-400 dark:text-gray-500">
+              还没有添加 S3 存储桶；不添加时所有上传走 CNB。支持 AWS S3 / Cloudflare R2 / 阿里云 OSS / 腾讯云 COS / MinIO 等 S3 兼容存储。
+            </p>
+          </div>
+
+          <StorageBucketModal
+            :open="bucketModalOpen"
+            :bucket="editingBucket"
+            @close="bucketModalOpen = false"
+            @saved="() => { toast.success('存储桶已保存，连接检测通过'); refreshBucketContext(true) }"
+          />
+
+          <ConfirmDialog
+            :open="!!deletingBucket"
+            :title="`删除存储桶「${deletingBucket?.label}」？`"
+            description="仅断开连接，不会删除桶内已有对象；若仍有图片引用该桶，将无法删除。"
+            confirm-text="删除"
+            :loading="deletingBucketNow"
+            @confirm="handleDeleteBucket"
+            @cancel="deletingBucket = null"
+          />
+        </div>
+
+        <!-- 列表每页条数 -->
+        <div class="card p-6">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <div class="flex items-start gap-3">
+              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">
+                <Rows3 class="h-5 w-5" />
+              </div>
+              <div class="min-w-0">
+                <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">列表每页条数</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">图片列表分页大小：当前 {{ settings.pageSize }} 条</p>
+              </div>
+            </div>
+            <div class="flex shrink-0 gap-2">
+              <button
+                v-for="n in PAGE_SIZE_OPTIONS"
+                :key="n"
+                @click="settings.pageSize = n"
+                class="h-8 w-12 rounded-lg text-xs font-bold transition-all"
+                :class="
+                  settings.pageSize === n
+                    ? 'brand-gradient text-white shadow-md shadow-indigo-500/25'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                "
+              >
+                {{ n }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 外观主题 -->
+        <div class="card p-6">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <div class="min-w-0">
+              <p class="whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">外观主题</p>
+              <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">日间 / 夜间 / 跟随系统</p>
+            </div>
+            <div class="shrink-0"><ThemeToggle /></div>
+          </div>
         </div>
       </div>
 

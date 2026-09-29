@@ -45,10 +45,11 @@ describe('sanitizeFilename', () => {
   it('保留中文名与合法字符', () => {
     expect(sanitizeFilename('我的 图片-01.webp')).toBe('我的_图片-01.webp')
   })
-  it('剥离路径遍历（. 和 / 均替换为下划线）', () => {
-    expect(sanitizeFilename('../../etc/passwd.png')).toBe('.._.._etc_passwd.png')
-    // 替换后不再含路径分隔符，无法构造 ../ 遍历（CNB 侧还会对 key 再做规范化）
+  it('剥离路径遍历（/ 替换为下划线，连续点折叠为单点）', () => {
+    // 连续点折叠：'foo..bar.jpg' 若原样保留，代理侧 '..' 校验会 400，直链永远打不开
+    expect(sanitizeFilename('../../etc/passwd.png')).toBe('._._etc_passwd.png')
     expect(sanitizeFilename('../../etc/passwd.png')).not.toContain('/')
+    expect(sanitizeFilename('foo..bar.jpg')).toBe('foo.bar.jpg')
   })
   it('超长文件名截断到 100', () => {
     expect(sanitizeFilename('a'.repeat(300) + '.png').length).toBeLessThanOrEqual(100)

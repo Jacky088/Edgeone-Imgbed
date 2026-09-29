@@ -13,6 +13,7 @@ import {
   INDEX_SHARD_PREFIX,
 } from '../functions/image-records/_lib.js'
 import { onRequest } from '../functions/image-records/index.js'
+import { normalizeSiteSettings, buildStorageBreakdown, validateBucketInput } from '../functions/image-records/_lib.js'
 
 const now = Date.now()
 const records = [
@@ -361,7 +362,7 @@ describe('image-records 接口集成（模拟 KV）', () => {
     // 测试 env 为空（无 SLUG_IMG/TOKEN_IMG）：有效路径计入 failed，不谎报成功
     const del = await call('DELETE', '?id=pg1&purge=1')
     expect(del.data.code).toBe(0)
-    expect(del.data.data.cnbFailed).toBe(1)
+    expect(del.data.data.sourceFailed).toBe(1)
     expect(kv!.store.has('image_pg1')).toBe(false)
     const index = JSON.parse(kv!.store.get('image_records_index')!)
     expect(index.find((r: any) => r.id === 'pg1')).toBeUndefined()
@@ -395,5 +396,107 @@ describe('image-records 接口集成（模拟 KV）', () => {
     await writeIndex(makeBigIndex(1200))
     const get = await call('GET')
     expect(get.data.data).toHaveLength(1200)
+  })
+})
+
+describe('normalizeSiteSettings（站点设置云端同步：白名单 + 钳制）', () => {
+  it('合法文档原样通过（布尔宽容处理）', () => {
+    const out = normalizeSiteSettings({
+      uploadSettings: {
+        quality: 0.8, generateThumbnail: true, keepOriginal: false, maxDimension: 1920,
+        namingRule: 'random', defaultCopyFormat: 'markdown', autoCopy: true, pageSize: 50,
+      },
+      theme: 'dark',
+    })
+    expect(out).toEqual({
+      uploadSettings: {
+        quality: 0.8, generateThumbnail: true, keepOriginal: false, maxDimension: 1920,
+        namingRule: 'random', defaultCopyFormat: 'markdown', autoCopy: true, pageSize: 50,
+      },
+      theme: 'dark',
+    })
+  })
+
+  it('越界值钳制到合法区间，非法枚举回落默认', () => {
+    const out = normalizeSiteSettings({
+      uploadSettings: {
+        quality: 5, maxDimension: -3, namingRule: '<script>', defaultCopyFormat: 'hack', pageSize: 7,
+      },
+      theme: 'javascript:alert(1)',
+    })
+    expect(out!.uploadSettings!.quality).toBe(0.95)
+    expect(out!.uploadSettings!.maxDimension).toBe(0)
+    expect(out!.uploadSettings!.namingRule).toBe('timestamp')
+    expect(out!.uploadSettings!.defaultCopyFormat).toBe('url')
+    expect(out!.uploadSettings!.pageSize).toBe(20)
+    expect(out!.theme).toBeUndefined()
+  })
+
+  it('未知字段不落盘，空文档/垃圾输入返回 null', () => {
+    const out = normalizeSiteSettings({
+      uploadSettings: { quality: 0.7, admin: true, token: 'x' },
+      evil: 'drop-me',
+    })
+    expect(out).toEqual({
+      uploadSettings: {
+        quality: 0.7, generateThumbnail: true, keepOriginal: false, maxDimension: 0,
+        namingRule: 'timestamp', defaultCopyFormat: 'url', autoCopy: false, pageSize: 20,
+      },
+    })
+    expect(normalizeSiteSettings(null)).toBeNull()
+    expect(normalizeSiteSettings('x')).toBeNull()
+    expect(normalizeSiteSettings({ unrelated: 1 })).toBeNull()
+  })
+})
+
+describe('buildStorageBreakdown（按桶累计计账）', () => {
+  it('按标记分组累计 count/size，含软删除记录；CNB 原名歧义防护', () => {
+    const out = buildStorageBreakdown([
+      { url: 'https://x.example.com/api/img/s3-a/1.webp', size: 100 },
+      { url: 'https://x.example.com/api/img/s3-a/1_thumb.webp', size: 10 },
+      { url: 'https://x.example.com/api/img/s3-b/2.png', size: 200, deletedAt: 123 },
+      { url: 'https://x.example.com/api/img/3.jpg', size: 300 },
+      { url: 'https://x.example.com/api/img/s3-photo.jpg', size: 5 },
+      { url: '', size: 9 },
+    ])
+    expect(out).toEqual({
+      a: { count: 2, size: 110 },
+      b: { count: 1, size: 200 },
+      cnb: { count: 2, size: 305 },
+    })
+  })
+
+  it('空/非法输入返回空对象', () => {
+    expect(buildStorageBreakdown([])).toEqual({})
+    expect(buildStorageBreakdown(null)).toEqual({})
+  })
+})
+
+describe('validateBucketInput 空间配额（quotaGb）', () => {
+  const doc = { active: 'cnb', buckets: [] }
+  const base = {
+    id: 'q1', label: 'x', endpoint: 'https://s3.example.com', bucket: 'bk',
+    accessKeyId: 'ak', secretAccessKey: 'sk',
+  }
+  it('合法 GB → 字节落盘', () => {
+    const r = validateBucketInput({ ...base, quotaGb: 5 }, doc)
+    expect(r.ok && r.value!.quotaBytes).toBe(5 * 1024 * 1024 * 1024)
+  })
+  it('小数 GB 换算取整字节', () => {
+    const r = validateBucketInput({ ...base, quotaGb: 0.5 }, doc)
+    expect(r.ok && r.value!.quotaBytes).toBe(Math.round(0.5 * 1024 ** 3))
+  })
+  it('留空/undefined → 不限（quotaBytes undefined）', () => {
+    const r1 = validateBucketInput({ ...base, quotaGb: '' }, doc)
+    const r2 = validateBucketInput({ ...base }, doc)
+    expect(r1.ok && r1.value!.quotaBytes).toBeUndefined()
+    expect(r2.ok && r2.value!.quotaBytes).toBeUndefined()
+  })
+  it('负数/非数字 → 拒绝', () => {
+    expect(validateBucketInput({ ...base, quotaGb: -1 }, doc).ok).toBe(false)
+    expect(validateBucketInput({ ...base, quotaGb: 'abc' }, doc).ok).toBe(false)
+  })
+  it('超大值 → 拒绝', () => {
+    expect(validateBucketInput({ ...base, quotaGb: 1024 * 101 }, doc).ok).toBe(false)
   })
 })

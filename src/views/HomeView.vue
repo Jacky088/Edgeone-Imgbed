@@ -22,6 +22,7 @@ import {
   HardDrive,
   Archive,
   CalendarCheck,
+  TriangleAlert,
   ArrowRight,
   Link,
   Copy,
@@ -37,9 +38,32 @@ import { useGlobalStats } from '@/composables/useGlobalStats'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 import { flushPendingRecords } from '@/utils/pendingRecords'
 
-const { fetchBucket } = useBucket()
+const { fetchBucket, effectiveId, storages } = useBucket()
 // 首页 recent=4 与侧栏统计共用同一次请求（fetchRecentWithStats 内部去重合并）
 const { stats: globalStats, fetchRecentWithStats } = useGlobalStats()
+
+// 当前上传目标的分桶统计（云端上传记录聚合，按桶独立计账）；配额来自桶配置（不设 = ♾️）
+const activeBucketStats = computed(() => {
+  const bs = globalStats.value?.byStorage
+  if (!bs) return null
+  return bs[effectiveId.value] ?? { count: 0, size: 0 }
+})
+const activeBucketLabel = computed(() =>
+  effectiveId.value === 'cnb'
+    ? 'CNB 存储'
+    : storages.value.find((s) => s.id === effectiveId.value)?.label || '当前存储桶',
+)
+const activeQuotaBytes = computed(
+  () => storages.value.find((s) => s.id === effectiveId.value)?.quotaBytes ?? null,
+)
+const activeUsagePct = computed(() =>
+  activeQuotaBytes.value
+    ? Math.round(((activeBucketStats.value?.size ?? 0) / activeQuotaBytes.value) * 100)
+    : 0,
+)
+const overQuota = computed(
+  () => !!activeQuotaBytes.value && (activeBucketStats.value?.size ?? 0) >= activeQuotaBytes.value,
+)
 
 const router = useRouter()
 
@@ -71,17 +95,26 @@ const loadingStats = ref(true)
 const statCards = computed(() => [
   {
     label: '已上传图片',
-    sub: '总数',
-    value: stats.value ? formatCompactCount(stats.value.count) : '—',
+    sub: `${activeBucketLabel.value} · 累计（含回收站）`,
+    value: activeBucketStats.value ? formatCompactCount(activeBucketStats.value.count) : '—',
     icon: Cloud,
     tint: 'bg-indigo-50 text-indigo-500 dark:bg-indigo-500/15 dark:text-indigo-300',
+    valueClass: '',
   },
   {
     label: '存储空间',
-    sub: '已使用',
-    value: stats.value ? formatCompactSize(stats.value.totalSize) : '—',
+    sub: `${activeBucketLabel.value} · 已使用${activeQuotaBytes.value ? `，配额 ${formatCompactSize(activeQuotaBytes.value)}` : '，未设配额'}`,
+    value: activeBucketStats.value
+      ? `${formatCompactSize(activeBucketStats.value.size)}${activeQuotaBytes.value ? ` / ${formatCompactSize(activeQuotaBytes.value)}` : ' ♾️'}`
+      : '—',
     icon: HardDrive,
     tint: 'bg-sky-50 text-sky-500 dark:bg-sky-500/15 dark:text-sky-300',
+    valueClass:
+      activeUsagePct.value >= 90
+        ? 'text-red-500 dark:text-red-400'
+        : activeUsagePct.value >= 80
+          ? 'text-amber-600 dark:text-amber-400'
+          : '',
   },
   {
     label: '今日新增',
@@ -104,8 +137,9 @@ const fetchHome = async (quiet = false) => {
   fetchBucket()
   try {
     // recent=4 + stats 一次请求拿全（与 AppShell 侧栏统计去重合并）
-    const records = (await fetchRecentWithStats(4)) as RecentItem[]
+    const records = (await fetchRecentWithStats(4)) as RecentItem[] | null
     stats.value = globalStats.value
+    if (records === null) return
     // 乐观插入的行（_optimistic）以服务端返回为准：同 id 替换，其余保留
     if (records.length > 0) {
       const serverIds = new Set(records.map((r) => r.id))
@@ -209,7 +243,7 @@ const clearResults = () => {
 
 // ---------- 最近上传：搜索 / 刷新 / 网格-列表切换 / 卡片操作 ----------
 const keyword = ref('')
-const viewMode = ref<'grid' | 'list'>('grid')
+const viewMode = ref<'grid' | 'list'>('list')
 const showSearch = ref(false)
 
 const filteredRecent = computed(() => {
@@ -263,13 +297,25 @@ const goBatch = () => router.push('/admin')
             <component :is="card.icon" class="h-5 w-5 sm:h-6 sm:w-6" />
           </div>
           <div class="min-w-0">
-            <p class="truncate text-xs text-gray-400 dark:text-gray-500">{{ card.label }}</p>
-            <p class="truncate text-lg font-black tabular-nums text-gray-900 sm:text-xl dark:text-white">
+            <p class="text-xs text-gray-400 dark:text-gray-500">{{ card.label }}</p>
+            <p
+              class="text-lg font-black leading-snug tabular-nums text-gray-900 sm:text-xl dark:text-white"
+              :class="card.valueClass"
+            >
               {{ card.value }}
             </p>
-            <p class="text-[11px] text-gray-400 dark:text-gray-500">{{ card.sub }}</p>
+            <p class="text-[11px] leading-snug text-gray-400 dark:text-gray-500">{{ card.sub }}</p>
           </div>
         </div>
+      </div>
+
+      <!-- 配额告警：当前上传桶空间已满时置顶警示（服务端会同步拒绝上传） -->
+      <div
+        v-if="overQuota"
+        class="flex items-center gap-2 rounded-xl bg-red-50 p-3 text-xs font-semibold leading-relaxed text-red-600 dark:bg-red-500/10 dark:text-red-400"
+      >
+        <TriangleAlert class="h-4 w-4 shrink-0" />
+        「{{ activeBucketLabel }}」空间已用满（{{ formatCompactSize(activeQuotaBytes || 0) }}），新上传将被拒绝；请清理图片或到设置页调大桶配额
       </div>
 
       <!-- 上传区 -->

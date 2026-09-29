@@ -24,17 +24,16 @@ const currentLabel = computed(() => options.find((o) => o.value === theme.value)
 </script>
 
 <template>
-  <!-- 紧凑模式：顶栏胶囊（图标 + 文字，如目标图的「跟随系统」） -->
+  <!-- 紧凑模式：顶栏纯图标按钮（与"关于"按钮同款风格；文字版在设置页的完整模式） -->
   <button
     v-if="props.compact"
     @click="
       theme = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'
     "
-    class="flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-medium text-gray-600 shadow-sm transition-all hover:border-indigo-200 hover:text-indigo-600 active:scale-95 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
+    class="flex h-9 w-9 items-center justify-center rounded-xl text-gray-500 transition-all hover:bg-gray-100 hover:text-indigo-600 active:scale-95 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-indigo-300"
     :title="`当前：${currentLabel}，点击切换`"
   >
-    <component :is="currentIcon" class="h-4 w-4" />
-    <span class="hidden sm:inline">{{ currentLabel }}</span>
+    <component :is="currentIcon" class="h-[18px] w-[18px]" />
     <span class="sr-only">切换主题</span>
   </button>
   <!-- 完整模式：三态循环切换（设置页等宽松位置使用） -->

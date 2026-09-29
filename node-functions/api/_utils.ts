@@ -8,9 +8,20 @@ const REMEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
 /**
  * 获取认证密钥：优先使用 AUTH_SECRET 环境变量，
  * 未设置时从 SITE_PASSWORD 派生，保证已有部署无需新增配置即可使用
+ * （导出供 _storage 的内部端点鉴权复用，保证派生规则单一来源）
  */
-function getAuthSecret(): string {
+export function getAuthSecret(): string {
   return process.env.AUTH_SECRET || `imgbed-auth:${process.env.SITE_PASSWORD || ''}`
+}
+
+/**
+ * 内部端点专用密钥：仅接受显式配置的 AUTH_SECRET，不从 SITE_PASSWORD 派生。
+ * 原因：站点口令可能被共享/泄露，且 token payload 可离线爆破低熵口令——
+ * 若内部密钥可由口令推导，攻击者可伪造内部鉴权取走全部 S3 凭证。
+ * 未设置 AUTH_SECRET 时返回 null，内部端点一律拒绝（多存储功能随之关闭）。
+ */
+export function getInternalAuthSecret(): string | null {
+  return process.env.AUTH_SECRET || null
 }
 
 /**
@@ -435,10 +446,11 @@ function fixMulterFilename(name: string): string {
 }
 
 /**
- * 文件名安全过滤：防止路径遍历；保留 Unicode 字母数字（含中文），其余替换为下划线
+ * 文件名安全过滤：防止路径遍历；保留 Unicode 字母数字（含中文），其余替换为下划线。
+ * 连续点折叠为单点：'foo..bar.jpg' 若原样上传，代理侧 '..' 校验会 400，直链永远打不开
  */
 function sanitizeFilename(filename: string): string {
-  const cleaned = filename.replace(/[^\p{L}\p{N}._-]/gu, '_')
+  const cleaned = filename.replace(/[^\p{L}\p{N}._-]/gu, '_').replace(/\.{2,}/g, '.')
   return cleaned.length > 100 ? cleaned.slice(0, 100) : cleaned
 }
 

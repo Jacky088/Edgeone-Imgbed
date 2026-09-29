@@ -170,10 +170,11 @@ async function readIndex() {
           IMG_RECORDS_KV.get(`${INDEX_SHARD_PREFIX}${i}`, { type: 'json' }).catch(() => null),
         ),
       )
+      // 任一分片读取失败必须整体回退全表扫描：返回部分合并结果会被调用方当作
+      // 权威索引回写固化，缺失分片的记录将从列表永久消失（本体仍在）
+      if (pages.some((p) => !Array.isArray(p))) return null
       const merged = []
-      for (const page of pages) {
-        if (Array.isArray(page)) merged.push(...page)
-      }
+      for (const page of pages) merged.push(...page)
       return merged
     }
     return null
@@ -183,6 +184,10 @@ async function readIndex() {
 }
 
 // 回退路径：逐 key 全表扫描并重建索引（仅在索引缺失/超限降级时触发）
+// 回退路径：逐 key 全表扫描并重建索引（仅在索引缺失/超限降级时触发）
+// 分页上限 200 页（256 键/页 ≈ 5.1 万条）：cursor 异常时兜底防死循环挂起请求
+const LIST_MAX_PAGES = 200
+
 async function listRecords() {
   const records = []
   let cursor = ''
@@ -199,7 +204,7 @@ async function listRecords() {
     )
 
     records.push(...values.filter(Boolean))
-    complete = Boolean(page?.complete) || keys.length === 0
+    complete = Boolean(page?.complete) || keys.length === 0 || records.length >= LIST_MAX_PAGES * 256
     cursor = page?.cursor || keys.at(-1)?.key || ''
   }
 
@@ -330,21 +335,29 @@ async function purgeExpired(records, env = null, cnbCleanup = false) {
     (r) => r.deletedAt && now - r.deletedAt > SOFT_DELETE_TTL_MS,
   )
   if (expired.length === 0) return records
-  await Promise.all(
-    expired.map((r) => IMG_RECORDS_KV.delete(recordKeyOf(safeIdOf(r.id)))),
-  )
+  // 本体删除分批（100/批）：长期未访问后首次读取可能积压大量到期记录，避免一次 KV 风暴
+  for (let i = 0; i < expired.length; i += 100) {
+    await Promise.all(
+      expired.slice(i, i + 100).map((r) => IMG_RECORDS_KV.delete(recordKeyOf(safeIdOf(r.id)))),
+    )
+  }
   const expiredIds = new Set(expired.map((r) => r.id))
   const rest = records.filter((r) => !expiredIds.has(r.id))
   // 快路径不再读本体对账，索引剔除必须在这里显式完成
   await writeIndex(buildIndex(rest))
   if (cnbCleanup && env) {
-    const paths = expired
-      .slice(0, CNB_PURGE_MAX_RECORDS)
-      .flatMap((r) => [cnbImgPathOf(r.url), cnbImgPathOf(r.thumbnailUrl)])
-      .filter(Boolean)
-    if (paths.length > 0) {
+    // 多存储分流：CNB 路径直接删，S3 路径（带 s3-{id}/ 标记）委托 node 内部端点（SigV4 单一实现在 node 侧）
+    const { cnbPaths, s3Paths } = splitSourcePaths(expired.slice(0, CNB_PURGE_MAX_RECORDS))
+    if (cnbPaths.length > 0) {
       try {
-        await deleteCnbImgFiles(env, paths)
+        await deleteCnbImgFiles(env, cnbPaths)
+      } catch {
+        // 尽力而为：失败留待孤儿扫描兜底
+      }
+    }
+    if (s3Paths.length > 0) {
+      try {
+        await deleteS3ViaNode(env, s3Paths)
       } catch {
         // 尽力而为：失败留待孤儿扫描兜底
       }
@@ -393,6 +406,8 @@ function buildStats(records, tzOffsetMinutes = null) {
     trashedSize,
     todayCount,
     byType,
+    // 按存储分桶的累计上传统计（含回收站，源文件仍在桶内）；前端按当前上传目标取用
+    byStorage: buildStorageBreakdown(records),
   }
 }
 
@@ -405,6 +420,24 @@ function sortRecords(records, sortKey, sortDir) {
     return ((Number(a.createdAt) || 0) - (Number(b.createdAt) || 0)) * dir
   })
   return sorted
+}
+
+// ===== 按存储分桶聚合（累计上传数量/体积）=====
+// 数据源 = 上传记录（KV 云端，天然持久），按 URL 中的存储标记分组；
+// 含软删除记录（源文件在 30 天清理前仍占用桶空间，purge 后自然减少）。
+// 记录只存主图大小（缩略图体积未单独记账），统计为保守近似值。
+function buildStorageBreakdown(records) {
+  const out = {}
+  for (const r of Array.isArray(records) ? records : []) {
+    if (!r || !r.url) continue
+    const marker = storageMarkerOf(r.url)
+    if (!marker) continue
+    const key = marker.id
+    const bucket = (out[key] = out[key] || { count: 0, size: 0 })
+    bucket.count++
+    bucket.size += Number(r.size) || 0
+  }
+  return out
 }
 
 // ===== CNB 平台资产清单（孤儿文件扫描）=====
@@ -537,6 +570,298 @@ async function deleteCnbImgFiles(env, paths) {
   return { ok, failed, skipped }
 }
 
+// ===== 多存储桶配置（KV 单键文档）=====
+// 多桶管理与"全局默认后端"的持久化层；S3 凭证只存这里，绝不返回给前端（掩码列表剔除密钥）。
+// 路由标记：公开链接 /api/img/s3-{id}/{key} → S3 桶；/api/img/{path} → CNB（存量零影响）。
+const STORAGE_CONFIG_KEY = 'storage_config'
+const MAX_BUCKETS = 10
+const BUCKET_ID_RE = /^[a-z0-9][a-z0-9-]{0,30}$/
+
+async function readStorageConfig() {
+  try {
+    const doc = await IMG_RECORDS_KV.get(STORAGE_CONFIG_KEY, { type: 'json' })
+    if (doc && typeof doc === 'object') {
+      return { active: doc.active || 'cnb', buckets: Array.isArray(doc.buckets) ? doc.buckets : [] }
+    }
+  } catch {
+    // KV 不可用按未配置处理（S3 功能整体隐藏，CNB 不受影响）
+  }
+  return { active: 'cnb', buckets: [] }
+}
+
+async function writeStorageConfig(doc) {
+  await IMG_RECORDS_KV.put(STORAGE_CONFIG_KEY, JSON.stringify(doc))
+}
+
+// 掩码视图：显式白名单构造（新增敏感字段时默认不出前端，而非黑名单删除式）
+function maskBucket(b) {
+  return {
+    id: b.id,
+    label: b.label,
+    endpoint: b.endpoint,
+    bucket: b.bucket,
+    region: b.region,
+    pathStyle: b.pathStyle,
+    quotaBytes: b.quotaBytes,
+    createdAt: b.createdAt,
+    lastTestAt: b.lastTestAt,
+    lastTestOk: b.lastTestOk,
+  }
+}
+
+/**
+ * 校验并合成桶配置：新增/编辑共用（编辑 = id 已存在）。
+ * 返回 { ok: true, value } 或 { ok: false, msg }；编辑时密钥留空沿用原值。
+ */
+function validateBucketInput(body, doc) {
+  const id = String(body?.id || '').trim()
+  if (!BUCKET_ID_RE.test(id)) {
+    return { ok: false, msg: '标识只能用小写字母、数字和中划线（1-31 位，字母或数字开头）' }
+  }
+  const existing = doc.buckets.find((b) => b.id === id) || null
+  if (!existing && doc.buckets.length >= MAX_BUCKETS) {
+    return { ok: false, msg: `最多支持 ${MAX_BUCKETS} 个存储桶` }
+  }
+  const label = String(body?.label || '').trim()
+  if (!label || label.length > 30) return { ok: false, msg: '名称必填且不超过 30 个字' }
+  const endpoint = String(body?.endpoint || '').trim().replace(/\/+$/, '')
+  // 强制 https 且禁止 userinfo（user:pass@host 会把凭证夹带进 KV 并经掩码列表外泄）；
+  // 本机/内网地址豁免 https，保留本地 S3 Mock 联调能力
+  try {
+    const u = new URL(endpoint)
+    const isLocal = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u.hostname)
+    if (u.protocol !== 'https:' && !isLocal) {
+      return { ok: false, msg: '端点必须使用 https（本机/内网地址可用 http）' }
+    }
+    if (u.username || u.password || u.pathname !== '/' || u.search || u.hash) {
+      return { ok: false, msg: '端点必须是裸域名（不带桶名、路径与凭据）' }
+    }
+  } catch {
+    return { ok: false, msg: '端点格式无效' }
+  }
+  const bucket = String(body?.bucket || '').trim()
+  if (!/^[\w.-]{1,255}$/.test(bucket)) return { ok: false, msg: '桶名不合法（仅限字母数字 . _ -）' }
+  const region = String(body?.region || '').trim()
+  if (region.length > 64) return { ok: false, msg: 'Region 过长' }
+  const pathStyle = body?.pathStyle !== false
+  // 空间配额（可选，GB）：留空/0 = 不限（♾️）；合法值换算为字节落盘
+  let quotaBytes
+  const rawQuota = body?.quotaGb
+  if (rawQuota !== undefined && rawQuota !== null && String(rawQuota).trim() !== '') {
+    const gb = Number(rawQuota)
+    if (!Number.isFinite(gb) || gb <= 0) return { ok: false, msg: '空间配额必须是正数（GB），留空则不限制' }
+    if (gb > 1024 * 100) return { ok: false, msg: '空间配额过大（上限 102400 GB）' }
+    quotaBytes = Math.round(gb * 1024 * 1024 * 1024)
+  }
+  let accessKeyId = String(body?.accessKeyId || '').trim()
+  let secretAccessKey = String(body?.secretAccessKey || '').trim()
+  if (existing) {
+    // 编辑：标识不可变；密钥留空 = 沿用原值（前端不持有密钥）
+    if (!accessKeyId) accessKeyId = existing.accessKeyId
+    if (!secretAccessKey) secretAccessKey = existing.secretAccessKey
+  }
+  if (!accessKeyId || !secretAccessKey) {
+    return { ok: false, msg: 'AccessKeyId 与 SecretAccessKey 必填' }
+  }
+  if (accessKeyId.length > 256 || secretAccessKey.length > 256) {
+    return { ok: false, msg: '访问密钥过长' }
+  }
+  return {
+    ok: true,
+    value: {
+      id,
+      label,
+      endpoint,
+      bucket,
+      region,
+      pathStyle,
+      accessKeyId,
+      secretAccessKey,
+      createdAt: existing ? existing.createdAt : Date.now(),
+      quotaBytes,
+      // 保存前的连接检测由 node 侧完成，通过时客户端带 lastTestOk=true 落盘状态
+      lastTestAt: body?.lastTestOk === true ? Date.now() : existing?.lastTestAt,
+      lastTestOk: body?.lastTestOk === true ? true : (existing?.lastTestOk ?? undefined),
+    },
+  }
+}
+
+// URL → 存储归属：{ id: 'cnb', path } | { id: '{桶id}', path: 's3-{id}/{key}' } | null
+// S3 标记判断必须在 CNB 之前（/api/img/s3-... 同样命中 /api/img/ 前缀）
+function storageMarkerOf(recordUrl) {
+  const raw = String(recordUrl || '')
+  if (!raw) return null
+  const idx = raw.indexOf('/api/img/s3-')
+  if (idx >= 0) {
+    const rest = raw.slice(idx + '/api/img/'.length).split(/[?#]/)[0]
+    const m = rest.match(/^(s3-[a-z0-9][a-z0-9-]{0,30})\/(.+)$/)
+    if (m) return { id: m[1].slice(3), path: rest }
+  }
+  const cnbPath = cnbImgPathOf(raw)
+  return cnbPath ? { id: 'cnb', path: cnbPath } : null
+}
+
+// 记录列表 → 按存储分组的源文件路径（主图 + 缩略图；S3 路径带完整标记，交 node 删除）
+function splitSourcePaths(records) {
+  const cnbPaths = []
+  const s3Paths = []
+  const seenS3 = new Set()
+  for (const r of Array.isArray(records) ? records : []) {
+    for (const u of [r?.url, r?.thumbnailUrl]) {
+      if (!u) continue
+      const t = storageMarkerOf(u)
+      if (!t) continue
+      if (t.id === 'cnb') cnbPaths.push(t.path)
+      else if (!seenS3.has(t.path)) {
+        seenS3.add(t.path)
+        s3Paths.push(t.path)
+      }
+    }
+  }
+  return { cnbPaths, s3Paths }
+}
+
+// ===== 内部端点鉴权（node ↔ edge 双向互信）=====
+// 仅由显式配置的 AUTH_SECRET 派生，不从 SITE_PASSWORD 回退：
+// 站点口令可能被共享，token payload 又可离线爆破低熵口令——
+// 若内部密钥可由口令推导，攻击者可伪造内部鉴权取走全部 S3 凭证。
+// 未配置 AUTH_SECRET 时内部端点整体拒绝（多存储功能随之关闭）。
+const INTERNAL_AUTH_CONST = 'imgbed-internal-auth:v1'
+
+function b64urlEncode(bytes) {
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function internalAuthToken(env) {
+  const secret = env?.AUTH_SECRET
+  if (!secret) return ''
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(INTERNAL_AUTH_CONST))
+  return b64urlEncode(new Uint8Array(mac))
+}
+
+async function verifyInternalAuth(request, env) {
+  const header = request.headers.get('x-internal-auth') || ''
+  if (!header) return false
+  const expected = await internalAuthToken(env)
+  if (!expected || header.length !== expected.length) return false
+  let diff = 0
+  for (let i = 0; i < header.length; i++) diff |= header.charCodeAt(i) ^ expected.charCodeAt(i)
+  return diff === 0
+}
+
+// ===== S3 源文件删除（委托 node 内部端点）=====
+// SigV4 只在 node 侧实现一份；边缘侧带内部鉴权调用 /api/file/delete-internal。
+// 尽力而为：任何失败都计入 failed（留待孤儿扫描兜底），绝不谎报成功。
+const S3_PURGE_TIMEOUT_MS = 15000
+
+// 分块委托 node 内部端点删除 S3 源文件（单次上限 100，超出分批，避免静默截断漏删）
+async function deleteS3ViaNode(env, markerPaths) {
+  const ok = []
+  const failed = []
+  const all = Array.isArray(markerPaths) ? markerPaths : []
+  if (all.length === 0) return { ok, failed }
+  const base = String(env?.BASE_IMG_URL || '').replace(/\/+$/, '')
+  if (!base) return { ok, failed: [...all] }
+  const chunks = []
+  for (let i = 0; i < all.length; i += 100) chunks.push(all.slice(i, i + 100))
+  for (const batch of chunks) {
+    let timer
+    try {
+      const resp = await Promise.race([
+        fetch(`${base}/api/file/delete-internal`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-internal-auth': await internalAuthToken(env),
+          },
+          body: JSON.stringify({ paths: batch }),
+        }),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('timeout')), S3_PURGE_TIMEOUT_MS)
+        }),
+      ])
+      if (!resp.ok) {
+        failed.push(...batch)
+        continue
+      }
+      const { code, data } = await resp.json()
+      if (code !== 0 || !data) {
+        failed.push(...batch)
+        continue
+      }
+      ok.push(...(Array.isArray(data.ok) ? data.ok : []))
+      failed.push(...(Array.isArray(data.failed) ? data.failed : []))
+    } catch {
+      failed.push(...batch)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  return { ok, failed }
+}
+
+// ===== 站点设置云端同步（上传偏好 + 主题）=====
+// 单口令站点无用户体系：设置是站点级文档，登录即拉取、改动回写，全设备一致。
+// 本地 localStorage 仍是即时层（离线兜底/无闪白），云端为准据源。
+const SITE_SETTINGS_KEY = 'site_settings'
+const SITE_SETTINGS_MAX_BYTES = 10 * 1024
+
+function clampNum(value, min, max, fallback) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+// 白名单 + 钳制：与前端 useUploadSettings 的本地校验同规则，恶意/越界值不落盘
+function normalizeSiteSettings(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const out = {}
+  const us = input.uploadSettings
+  if (us && typeof us === 'object' && !Array.isArray(us)) {
+    out.uploadSettings = {
+      quality: clampNum(us.quality, 0.3, 0.95, 0.7),
+      generateThumbnail: us.generateThumbnail !== false,
+      keepOriginal: us.keepOriginal === true,
+      maxDimension: clampNum(us.maxDimension, 0, 20000, 0),
+      namingRule: ['original', 'timestamp', 'random'].includes(us.namingRule) ? us.namingRule : 'timestamp',
+      defaultCopyFormat: ['url', 'markdown', 'html', 'bbcode'].includes(us.defaultCopyFormat) ? us.defaultCopyFormat : 'url',
+      autoCopy: us.autoCopy === true,
+      pageSize: [10, 20, 50, 100].includes(us.pageSize) ? us.pageSize : 20,
+    }
+  }
+  if (['light', 'dark', 'system'].includes(input.theme)) out.theme = input.theme
+  return Object.keys(out).length > 0 ? out : null
+}
+
+async function readSiteSettings() {
+  try {
+    const doc = await IMG_RECORDS_KV.get(SITE_SETTINGS_KEY, { type: 'json' })
+    if (doc && typeof doc === 'object') return doc
+  } catch {
+    // KV 不可用按未同步处理（前端维持本机设置）
+  }
+  return null
+}
+
+async function writeSiteSettings(normalized) {
+  const doc = { ...normalized, updatedAt: Date.now() }
+  const raw = JSON.stringify(doc)
+  if (raw.length > SITE_SETTINGS_MAX_BYTES) {
+    return { ok: false, msg: '设置内容超出大小限制' }
+  }
+  await IMG_RECORDS_KV.put(SITE_SETTINGS_KEY, raw)
+  return { ok: true, doc }
+}
+
 export {
   INDEX_KEY,
   INDEX_SAFE_LIMIT_BYTES,
@@ -561,4 +886,20 @@ export {
   listCnbImgAssets,
   isValidImgPath,
   deleteCnbImgFiles,
+  STORAGE_CONFIG_KEY,
+  MAX_BUCKETS,
+  BUCKET_ID_RE,
+  readStorageConfig,
+  writeStorageConfig,
+  maskBucket,
+  validateBucketInput,
+  storageMarkerOf,
+  splitSourcePaths,
+  verifyInternalAuth,
+  deleteS3ViaNode,
+  SITE_SETTINGS_KEY,
+  normalizeSiteSettings,
+  readSiteSettings,
+  writeSiteSettings,
+  buildStorageBreakdown,
 }

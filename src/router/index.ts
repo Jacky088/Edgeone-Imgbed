@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { isTokenLive } from '@/utils/authToken'
-import { isPasswordEnabled } from './authStatus'
+import { isPasswordEnabled, loadAuthStatus } from './authStatus'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -27,16 +27,17 @@ const router = createRouter({
       name: 'settings',
       component: () => import('../views/SettingsView.vue'),
     },
+    // 孤儿文件扫描与清理
     {
-      path: '/about',
-      name: 'about',
-      component: () => import('../views/AboutView.vue'),
+      path: '/orphan',
+      name: 'orphan',
+      component: () => import('../views/OrphanCleanupView.vue'),
     },
   ],
 })
 
 // [新增] 全局前置守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   // 同步双存储：localStorage（"记住我"）的 token 也镜像一份到 sessionStorage，
   // axios 拦截器只读 sessionStorage，避免两边不一致
   const remembered = localStorage.getItem('site_access_token')
@@ -45,6 +46,14 @@ router.beforeEach((to, from, next) => {
   }
 
   // 0. 未设置 SITE_PASSWORD（开放访问）时直接放行，不再强制走登录页
+  // 探测未完成（null）时先等探测结果：否则开放部署的每次首访/刷新都会被误拦到登录页
+  if (isPasswordEnabled() === null) {
+    try {
+      await loadAuthStatus()
+    } catch {
+      // 探测失败按有密码处理，走常规登录流程
+    }
+  }
   if (isPasswordEnabled() === false) {
     next()
     return

@@ -9,6 +9,8 @@ export interface GlobalStats {
   trashed: number
   trashedSize?: number
   todayCount?: number
+  /** 按存储分桶的累计上传统计（cnb + 各 s3-{id}；上传页顶部/配额联动用） */
+  byStorage?: Record<string, { count: number; size: number }>
 }
 
 const stats = ref<GlobalStats | null>(null)

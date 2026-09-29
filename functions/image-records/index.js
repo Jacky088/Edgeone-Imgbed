@@ -17,20 +17,36 @@ import {
   cnbImgPathOf,
   listCnbImgAssets,
   deleteCnbImgFiles,
+  readStorageConfig,
+  writeStorageConfig,
+  maskBucket,
+  validateBucketInput,
+  splitSourcePaths,
+  verifyInternalAuth,
+  deleteS3ViaNode,
+  normalizeSiteSettings,
+  readSiteSettings,
+  writeSiteSettings,
+  buildStorageBreakdown,
 } from './_lib.js'
 
 // 每条记录落盘的最简形状（拒绝非法/多余字段，宽高在此持久化）
+// 字段长度上限：索引条目直接包含这些字段，超长值会把索引推入分片膨胀
 function normalizeRecord(record) {
   const size = Number(record.size)
   const width = Number(record.width)
   const height = Number(record.height)
+  const clip = (v, max) => {
+    const s = String(v ?? '')
+    return s.length > max ? s.slice(0, max) : s
+  }
   return {
     id: record.id,
-    name: String(record.name || ''),
-    url: String(record.url),
-    thumbnailUrl: record.thumbnailUrl ? String(record.thumbnailUrl) : undefined,
+    name: clip(record.name, 200),
+    url: clip(record.url, 1024),
+    thumbnailUrl: record.thumbnailUrl ? clip(record.thumbnailUrl, 1024) : undefined,
     size: Number.isFinite(size) && size > 0 ? Math.round(size) : 0,
-    type: String(record.type || ''),
+    type: clip(record.type, 100),
     createdAt: Number(record.createdAt) || Date.now(),
     width: Number.isFinite(width) && width > 0 ? Math.round(width) : undefined,
     height: Number.isFinite(height) && height > 0 ? Math.round(height) : undefined,
@@ -80,11 +96,23 @@ async function updateIndex(normalized) {
 
 export async function onRequest({ request, env }) {
   try {
+    const url = new URL(request.url)
+
+    // 内部端点（node 函数读取桶配置文档）：不走用户登录态，用 x-internal-auth HMAC 互信
+    // stats = 按桶聚合的累计上传统计（上传配额强制校验的数据源，随配置同取省一次往返）
+    if (url.searchParams.get('storage-internal') === '1') {
+      if (!(await verifyInternalAuth(request, env))) {
+        return json(1, '内部鉴权失败', null, 401)
+      }
+      const doc = await readStorageConfig()
+      const index = (await readIndex()) || (await snapshot())
+      return json(0, '获取成功', { ...doc, stats: buildStorageBreakdown(index) })
+    }
+
     if (!(await isAuthorized(request, env))) {
       return json(401, '未授权访问', null, 401)
     }
 
-    const url = new URL(request.url)
     const ip = getClientIp(request)
 
     // 写操作更严格；批量写单独放宽（一次请求写多条，请求数反而更少）
@@ -134,6 +162,101 @@ export async function onRequest({ request, env }) {
         orphansTruncated: orphans.length > 1000,
         truncated: listed.truncated,
       })
+    }
+
+    // ===== 站点设置云端同步（上传偏好 + 主题；登录即拉取，全设备一致）=====
+
+    if (request.method === 'GET' && url.searchParams.get('site-settings') === '1') {
+      return json(0, '获取成功', await readSiteSettings())
+    }
+
+    if (request.method === 'POST' && url.searchParams.get('site-settings') === '1') {
+      const body = await request.json().catch(() => null)
+      const normalized = normalizeSiteSettings(body)
+      if (!normalized) return json(1, '设置内容无效', null, 400)
+      const saved = await writeSiteSettings(normalized)
+      if (!saved.ok) return json(1, saved.msg, null, 400)
+      return json(0, '已同步', saved.doc)
+    }
+
+    // ===== 多存储桶管理（设置页桶卡片；S3 凭证只在服务端流转，掩码列表不含密钥）=====
+
+    // 桶列表（掩码）+ 当前默认后端
+    if (request.method === 'GET' && url.searchParams.get('storage-list') === '1') {
+      const doc = await readStorageConfig()
+      return json(0, '获取成功', { active: doc.active, buckets: doc.buckets.map(maskBucket) })
+    }
+
+    if (request.method === 'POST') {
+      // 保存桶（新增/编辑共用：id 已存在即编辑；保存前的连接检测由前端先调 node /api/storage/test）
+      if (url.searchParams.get('storage-bucket') === '1') {
+        const body = await request.json().catch(() => null)
+        const doc = await readStorageConfig()
+        const checked = validateBucketInput(body, doc)
+        if (!checked.ok) return json(1, checked.msg, null, 400)
+        const pos = doc.buckets.findIndex((b) => b.id === checked.value.id)
+        if (pos >= 0) doc.buckets[pos] = checked.value
+        else doc.buckets.push(checked.value)
+        await writeStorageConfig(doc)
+        return json(0, '已保存', maskBucket(checked.value))
+      }
+
+      // 切换全局默认后端（全局生效：新上传进所选后端，旧图原地不动）
+      if (url.searchParams.get('storage-active') === '1') {
+        const body = await request.json().catch(() => null)
+        const target = String(body?.active || '').trim()
+        const doc = await readStorageConfig()
+        if (target !== 'cnb' && !doc.buckets.some((b) => b.id === target)) {
+          return json(1, '目标存储不存在', null, 400)
+        }
+        doc.active = target
+        await writeStorageConfig(doc)
+        return json(0, target === 'cnb' ? '已切换回 CNB 存储' : `默认存储已切换为 ${target}`, { active: target })
+      }
+
+      // 回写连接检测结果（设置页"检测"按钮：node 四步探测成功后更新状态）
+      if (url.searchParams.get('storage-test-result') === '1') {
+        const body = await request.json().catch(() => null)
+        const id = String(body?.id || '')
+        const doc = await readStorageConfig()
+        const bucket = doc.buckets.find((b) => b.id === id)
+        if (!bucket) return json(1, '存储桶不存在', null, 404)
+        if (body?.ok === true) {
+          bucket.lastTestAt = Date.now()
+          bucket.lastTestOk = true
+        } else {
+          bucket.lastTestAt = Date.now()
+          bucket.lastTestOk = false
+        }
+        await writeStorageConfig(doc)
+        return json(0, '已更新', maskBucket(bucket))
+      }
+    }
+
+    // 删除桶：引用检查（仍有记录指向时拒绝）→ 删除；若是当前默认后端则自动切回 CNB
+    if (request.method === 'DELETE' && url.searchParams.get('storage-bucket') === '1') {
+      const id = url.searchParams.get('id') || ''
+      const doc = await readStorageConfig()
+      const bucket = doc.buckets.find((b) => b.id === id)
+      if (!bucket) return json(1, '存储桶不存在', null, 404)
+      // 引用检查：索引缺失时回退全量扫描，绝不能因快路径拿不到索引而放行删除
+      const index = (await readIndex()) || (await records(true))
+      const marker = `/api/img/s3-${id}/`
+      let refs = 0
+      for (const entry of index || []) {
+        if ((entry.url && entry.url.includes(marker)) || (entry.thumbnailUrl && entry.thumbnailUrl.includes(marker))) refs++
+      }
+      if (refs > 0) {
+        return json(1, `该存储桶仍被 ${refs} 张图片引用，请先删除或迁移对应图片`, { refs })
+      }
+      doc.buckets = doc.buckets.filter((b) => b.id !== id)
+      let switchedBackToCnb = false
+      if (doc.active === id) {
+        doc.active = 'cnb'
+        switchedBackToCnb = true
+      }
+      await writeStorageConfig(doc)
+      return json(0, switchedBackToCnb ? '已删除，默认存储已切回 CNB' : '已删除', { switchedBackToCnb })
     }
 
     if (request.method === 'GET') {
@@ -195,9 +318,11 @@ export async function onRequest({ request, env }) {
     }
 
     if (request.method === 'POST') {
-      const body = await request.json()
+      const body = await request.json().catch(() => null)
       // 批量写：{ records: [...] }（上限 50 条/次；批量写后一次性重建索引，避免 N 次读改写）
       if (body && Array.isArray(body.records)) {
+        // 超限明确拒绝（旧逻辑静默丢弃第 51 条起，调用方无从感知）
+        if (body.records.length > 50) return json(1, '单次最多 50 条记录', null, 400)
         const items = body.records.slice(0, 50)
         if (items.length === 0) return json(1, '记录列表为空', null, 400)
         const invalid = items.findIndex((r) => !r?.id || !r?.url || !r?.createdAt)
@@ -213,9 +338,12 @@ export async function onRequest({ request, env }) {
             IMG_RECORDS_KV.put(recordKeyOf(safeIdOf(normalized.id)), JSON.stringify(normalized)),
           ),
         )
-        // 合并写入索引：现快照（快路径=1 次索引读；缺失时自动扫描重建）+ 本次新记录。
+        // 合并写入索引：现快照（快路径=1 次索引读；缺失时自动扫描重建）+ 本次提交。
         // 此前直接用写入前的旧快照重建，新记录永远进不了索引（接口返回成功但列表不可见）——批量记录丢失的根因
+        // 同 id 已存在时也必须用本次字段覆写索引条目（清除 deletedAt、刷新 name/size 等）：
+        // 否则回收站中的记录被客户端重传后，索引仍标记删除，快路径 purge 会把刚重传的本体物理删除
         const all = await records()
+        const byId = new Map(normalizedItems.map((n) => [n.id, n]))
         const existingIds = new Set(all.map((r) => r.id))
         const freshIds = new Set()
         const fresh = buildIndex(normalizedItems).filter((e) => {
@@ -223,7 +351,24 @@ export async function onRequest({ request, env }) {
           freshIds.add(e.id)
           return true
         })
-        const merged = [...fresh, ...all].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+        const merged = [...fresh, ...all]
+          .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+          .map((entry) => {
+            const n = byId.get(entry.id)
+            if (!n) return entry
+            return {
+              ...entry,
+              name: n.name,
+              url: n.url,
+              thumbnailUrl: n.thumbnailUrl,
+              size: n.size,
+              type: n.type,
+              createdAt: n.createdAt,
+              width: n.width,
+              height: n.height,
+              deletedAt: undefined,
+            }
+          })
         await writeIndex(merged)
         return json(0, `已保存 ${items.length} 条记录`, { ok: items.length })
       }
@@ -286,17 +431,18 @@ export async function onRequest({ request, env }) {
       // 彻底删除由服务端联动删除 CNB 原图（尽力而为），失败数经响应 cnbFailed 直达前端
       const targets = ids.slice(0, 100)
       const keyOf = (id) => recordKeyOf(safeIdOf(id))
-      const cnbPathsOf = (record) =>
-        [cnbImgPathOf(record?.url), cnbImgPathOf(record?.thumbnailUrl)].filter(Boolean)
 
       if (targets.length === 1) {
         const key = keyOf(targets[0])
         const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
         if (!record) return json(0, '已删除', null) // 幂等：重复删除不再 404
-        let cnbFailed = 0
+        let sourceFailed = 0
         if (purge) {
           await IMG_RECORDS_KV.delete(key)
-          cnbFailed = (await deleteCnbImgFiles(env, cnbPathsOf(record))).failed
+          // 多存储分流：CNB 直接删，S3 委托 node 内部端点（失败数合并上报）
+          const { cnbPaths, s3Paths } = splitSourcePaths([record])
+          if (cnbPaths.length > 0) sourceFailed += (await deleteCnbImgFiles(env, cnbPaths)).failed
+          if (s3Paths.length > 0) sourceFailed += (await deleteS3ViaNode(env, s3Paths)).failed.length
         } else {
           record.deletedAt = Date.now()
           await IMG_RECORDS_KV.put(key, JSON.stringify(record))
@@ -311,17 +457,17 @@ export async function onRequest({ request, env }) {
             await writeIndex(index)
           }
         }
-        return json(0, purge ? '已彻底删除' : '已移入回收站', purge ? { cnbFailed } : null)
+        return json(0, purge ? '已彻底删除' : '已移入回收站', purge ? { sourceFailed } : null)
       }
       let ok = 0
       const touched = [] // { id, deletedAt?, purge }
-      const cnbPaths = []
+      const records = [] // 待删除源文件的记录（彻底删除时用）
       for (const id of targets) {
         const key = keyOf(id)
         const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
         if (!record) continue
         if (purge) {
-          cnbPaths.push(...cnbPathsOf(record))
+          records.push(record)
           await IMG_RECORDS_KV.delete(key)
           touched.push({ id: record.id, purge: true })
         } else {
@@ -349,21 +495,24 @@ export async function onRequest({ request, env }) {
           await snapshot()
         }
       }
-      let cnbFailed = 0
-      if (purge && cnbPaths.length > 0) {
-        cnbFailed = (await deleteCnbImgFiles(env, cnbPaths)).failed
+      let sourceFailed = 0
+      if (purge && records.length > 0) {
+        const { cnbPaths, s3Paths } = splitSourcePaths(records)
+        if (cnbPaths.length > 0) sourceFailed += (await deleteCnbImgFiles(env, cnbPaths)).failed
+        if (s3Paths.length > 0) sourceFailed += (await deleteS3ViaNode(env, s3Paths)).failed.length
       }
       return json(0, purge ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`, {
         ok,
         fail: targets.length - ok,
-        cnbFailed,
+        sourceFailed,
       })
     }
 
     return json(405, '不支持的请求方法', null, 405)
   } catch (error) {
     console.error('KV operation failed:', error)
-    // 真实原因直达前端：笼统的"绑定丢失"提示会掩盖代码异常，无法在线诊断
+    // 真实原因直达前端：笼统的"绑定丢失"提示会掩盖代码异常，无法在线诊断（fa54e90 的明确设计）。
+    // 权衡：错误原文可能含 KV 细节，但调用方均为已认证用户，属可接受的诊断便利
     const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
     return json(1, `操作失败: ${reason}`, null, 500)
   }

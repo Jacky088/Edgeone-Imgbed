@@ -23,7 +23,7 @@
             {{ isDragging ? '快松手！' : '点击或拖拽上传' }}
           </p>
           <p class="mx-auto max-w-md text-xs leading-relaxed text-gray-400 sm:text-sm dark:text-gray-500">
-            支持 JPG、PNG、GIF、WebP（最大 30MB），可批量多选、Ctrl+V 粘贴或拖入整个文件夹
+            支持 JPG、PNG、GIF、WebP（CNB 最大 5MB，其他存储桶按实际限制），可批量多选、Ctrl+V 粘贴或拖入整个文件夹
           </p>
         </div>
       </div>
@@ -76,7 +76,7 @@
             {{ isDragging ? '快松手！' : '点击或拖拽上传' }}
           </p>
           <p class="text-sm text-gray-400 dark:text-gray-500">
-            支持 JPG, PNG, GIF, WebP (最大 30MB)，可批量多选、Ctrl+V 粘贴或拖入整个文件夹
+            支持 JPG, PNG, GIF, WebP（CNB 最大 5MB，其他存储桶按实际限制），可批量多选、Ctrl+V 粘贴或拖入整个文件夹
           </p>
         </div>
       </div>
@@ -226,6 +226,29 @@
         </div>
       </Transition>
     </Teleport>
+
+    <!-- 集中提示弹窗：格式拒绝 / CNB 5MB 超限 -->
+    <Teleport to="body">
+      <div
+        v-if="alertModal"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+        @click.self="alertModal = null"
+      >
+        <div class="card w-full max-w-sm p-6 text-center">
+          <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-500 dark:bg-amber-500/15 dark:text-amber-300">
+            <XCircle class="h-6 w-6" />
+          </div>
+          <h3 class="text-base font-bold text-gray-900 dark:text-white">{{ alertModal.title }}</h3>
+          <p class="mt-2 text-sm leading-relaxed text-gray-500 dark:text-gray-400">{{ alertModal.message }}</p>
+          <button
+            @click="alertModal = null"
+            class="mt-5 h-10 w-full rounded-xl brand-gradient text-sm font-bold text-white shadow-lg shadow-indigo-500/25 transition-all hover:opacity-90"
+          >
+            知道了
+          </button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -237,6 +260,9 @@ import { Progress } from '@/components/ui/progress'
 import { toast } from 'vue-sonner'
 import { UploadCloud, XCircle, Loader2, FileImage, CheckCircle2, ArrowRight } from 'lucide-vue-next'
 import { useUploadSettings } from '@/composables/useUploadSettings'
+import { useBucket } from '@/composables/useBucket'
+
+// 本机上传目标（顶栏下拉）：随每个上传请求下发，服务端校验
 import { useGlobalStats } from '@/composables/useGlobalStats'
 import { enqueuePendingRecord, type PendingRecord } from '@/utils/pendingRecords'
 import { hashBlob, lookupHash, rememberHash } from '@/utils/dedupeCache'
@@ -336,7 +362,9 @@ interface UploadResponse {
 
 // 拼接 CNB 源站直链（确保恰好一个斜杠，且 path 缺失时返回空串而非 "undefined"）
 function toCnbUrl(path?: string): string {
-  return path ? `https://cnb.cool/${path.replace(/^\//, '')}` : ''
+  // S3 标记路径（s3-{id}/…）没有 CNB 原生直链，urlOriginal 留空（结果卡按条件渲染）
+  if (!path || /^s3-[a-z0-9][a-z0-9-]{0,30}\//.test(path)) return ''
+  return `https://cnb.cool/${path.replace(/^\//, '')}`
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -357,9 +385,15 @@ const emit = defineEmits<{
 }>()
 
 const { settings } = useUploadSettings()
+const { effectiveId, storages } = useBucket()
+// 分桶累计统计（配额前置校验用；服务端在上传接口仍会强制校验）
+const { stats: liveStats } = useGlobalStats()
 
 const tasks = ref<UploadTask[]>([])
 const rejectedFiles = ref<RejectedFile[]>([])
+// 集中提示弹窗（格式拒绝 / CNB 5MB 超限），替代零散 toast
+const alertModal = ref<{ title: string; message: string } | null>(null)
+const CNB_MAX_BYTES = 5 * 1024 * 1024
 // 整批全部上传成功后置 true：顶部拖拽区恢复空状态，下方任务列表（完成状态）保留展示
 const batchCompleted = ref<boolean>(false)
 const processingIndex = ref(0)
@@ -574,7 +608,12 @@ async function processTaskFile(t: UploadTask): Promise<void> {
 }
 
 // 批量入口：校验（非图片/超大/重复）→ 建队 → 逐张压缩（压缩失败仅标记该张，不中断批次）
+// 上传进行中拒绝新批次：handleFiles 会整体替换 tasks，worker 持有的旧任务收尾统计会错乱
 async function handleFiles(list: File[]): Promise<void> {
+  if (uploading.value) {
+    toast.warning('正在上传中，请等本轮结束后再添加文件')
+    return
+  }
   const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 
   // 被拒文件逐个记录原因，在队列下方持久展示（toast 只做汇总提醒）
@@ -610,7 +649,15 @@ async function handleFiles(list: File[]): Promise<void> {
   const oversizeSkipped = rejected.filter((r) => r.reason === `超过 ${RAW_MAX_MB}MB`).length
   const dupNames = rejected.filter((r) => r.reason === '重复/同名').map((r) => r.name)
   if (typeSkipped > 0) {
-    toast.warning(`已跳过 ${typeSkipped} 个非图片文件`)
+    // 格式拒绝弹窗：明确支持格式清单（拒绝明细仍在队列下方列表展示）
+    const names = rejected
+      .filter((r) => r.reason === '非图片格式')
+      .slice(0, 3)
+      .map((r) => r.name)
+    alertModal.value = {
+      title: '不支持的文件格式',
+      message: `仅允许上传 JPG / PNG / GIF / WebP 四种图片格式，其他文件一律拒绝。已跳过 ${typeSkipped} 个文件${names.length > 0 ? `：${names.join('、')}${typeSkipped > 3 ? ' 等' : ''}` : ''}`,
+    }
   }
   if (oversizeSkipped > 0) {
     toast.warning(`单张图片最大 ${RAW_MAX_MB}MB！（已跳过 ${oversizeSkipped} 张超大图片）`)
@@ -815,6 +862,13 @@ onUnmounted(() => {
 // 单张上传 + 入批量落库队列；失败仅把该任务标记为 error，由调用方决定是否继续
 async function uploadSingle(t: UploadTask): Promise<void> {
   if (!t.file) return
+  // CNB 仓库单图上限 5MB：压缩产物（或原图直传）仍超限 → 该张失败，弹窗在批次收尾统一提示
+  if (effectiveId.value === 'cnb' && t.file.size > CNB_MAX_BYTES) {
+    t.status = 'error'
+    t.errorMsg = 'CNB 仓库最大支持 5MB 图片'
+    cnbOversizeCount.value++
+    return
+  }
   t.status = 'uploading'
   t.progress = 0
 
@@ -848,6 +902,19 @@ async function uploadSingle(t: UploadTask): Promise<void> {
   try {
     const formData = new FormData()
     formData.append('file', t.file)
+    // 本机上传目标（顶栏下拉选择；服务端校验存在性，缺省走站点默认）
+    formData.append('storage', effectiveId.value)
+    // 配额前置校验：当前桶设了空间且累计将超 → 直接标记失败（服务端在上传接口仍会强制校验兜底）
+    const quota = storages.value.find((s) => s.id === effectiveId.value)?.quotaBytes ?? null
+    if (quota) {
+      const used = liveStats.value?.byStorage?.[effectiveId.value]?.size ?? 0
+      if (used + t.file.size > quota) {
+        t.status = 'error'
+        t.errorMsg = '存储空间已满，无法上传'
+        toast.error('当前存储桶空间已满，无法继续上传；请清理图片或调大配额')
+        return
+      }
+    }
     if (props.generateThumbnail && t.thumbnailFile) {
       formData.append('thumbnail', t.thumbnailFile)
     }
@@ -965,6 +1032,13 @@ async function retryTask(t: UploadTask): Promise<void> {
     }
     errorMsg.value = ''
     await uploadSingle(t)
+    // 重试成功同样要落库：否则记录滞留内存队列，刷新页面后源文件成无记录孤儿
+    // （uploadSingle 内部会改写 t.status，这里取宽类型比较避免 TS 收窄误报）
+    const statusAfterRetry: string = t.status
+    if (statusAfterRetry === 'success') {
+      await flushRecordQueue()
+      useGlobalStats().refreshStats()
+    }
     // 重试后整批全部成功：同样恢复顶部空状态，下方完成列表保留
     if (tasks.value.length > 0 && tasks.value.every((x) => x.status === 'success')) {
       batchCompleted.value = true
@@ -979,6 +1053,9 @@ async function retryTask(t: UploadTask): Promise<void> {
 // 并发上传：同时传 CONCURRENCY 张，单张失败不中断批次
 const CONCURRENCY = 3
 
+// CNB 5MB 超限计数（批次内累计，收尾统一弹窗一次）
+const cnbOversizeCount = ref(0)
+
 async function startUpload(): Promise<void> {
   const pending = tasks.value.filter((t) => t.status === 'ready')
   if (pending.length === 0) {
@@ -988,6 +1065,7 @@ async function startUpload(): Promise<void> {
 
   uploading.value = true
   errorMsg.value = ''
+  cnbOversizeCount.value = 0
 
   let cursor = 0
   const total = tasks.value.length
@@ -1002,6 +1080,15 @@ async function startUpload(): Promise<void> {
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker))
 
   uploading.value = false
+
+  // CNB 超限弹窗：仅 CNB 目标触发，其他存储桶不弹
+  if (cnbOversizeCount.value > 0) {
+    alertModal.value = {
+      title: '超出 CNB 仓库限制',
+      message: `CNB 仓库最大支持 5MB 图片！本次 ${cnbOversizeCount.value} 张图片压缩后仍超过 5MB，已停止上传。可切换到其他存储桶（顶栏下拉）或调低压缩质量后重试。`,
+    }
+    cnbOversizeCount.value = 0
+  }
 
   const okCount = tasks.value.filter((t) => t.status === 'success').length
   const failCount = tasks.value.filter((t) => t.status === 'error').length

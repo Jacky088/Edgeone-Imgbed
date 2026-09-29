@@ -555,7 +555,7 @@ const onKeydown = (e: KeyboardEvent) => {
 }
 
 // 单条删除：正常列表软删除进回收站（toast 可撤销），回收站里先确认再彻底删除
-// （CNB 源文件删除已下沉到边缘函数 purge 流程，失败数由响应 cnbFailed 带回）
+// （源文件删除已下沉到边缘函数 purge 流程，失败数由响应 sourceFailed 带回，多存储按记录标记分流）
 const softDelete = async (item: ImageRecord) => {
   if (deleting.value) return
   deleting.value = true
@@ -569,10 +569,10 @@ const softDelete = async (item: ImageRecord) => {
     if (data.code === 0) {
       list.value = list.value.filter((row) => row.id !== item.id)
       if (trashMode.value) {
-        if ((data.data?.cnbFailed ?? 0) === 0) {
-          toast.success('已彻底删除（含 CNB 源文件）')
+        if ((data.data?.sourceFailed ?? 0) === 0) {
+          toast.success('已彻底删除（含源文件）')
         } else {
-          toast.warning('记录已彻底删除；部分 CNB 源文件删除失败')
+          toast.warning('记录已彻底删除；部分源文件删除失败')
         }
       } else {
         toast.success('已移入回收站，30 天内可恢复', {
@@ -600,14 +600,27 @@ const handleDelete = (item: ImageRecord) => softDelete(item)
 const restoreRecords = async (items: ImageRecord[], successMsg: string) => {
   if (items.length === 0) return
   try {
-    const { data } = await axios.put(`/image-records?${idsParams(items)}`, {}, { baseURL: '' })
-    if (data.code === 0) {
+    // 分块提交（≤40 id/批），避免"全选全部恢复"时 URL 超长整批 4xx
+    const chunks: ImageRecord[][] = []
+    for (let i = 0; i < items.length; i += 40) chunks.push(items.slice(i, i + 40))
+    let ok = 0
+    let fail = 0
+    for (const chunk of chunks) {
+      const { data } = await axios.put(`/image-records?${idsParams(chunk)}`, {}, { baseURL: '' })
+      if (data.code !== 0) {
+        fail += chunk.length
+        continue
+      }
+      ok += data.data?.ok ?? chunk.length
+      fail += data.data?.fail ?? 0
+    }
+    if (ok > 0) {
       const done = new Set(items.map((i) => i.id))
       list.value = list.value.filter((row) => !done.has(row.id))
-      toast.success(successMsg)
+      toast.success(fail === 0 ? successMsg : `${ok} 条恢复成功，${fail} 条失败`)
       fetchList(true)
     } else {
-      toast.error(data.msg || '恢复失败')
+      toast.error('恢复失败')
     }
   } catch {
     toast.error('恢复失败')
@@ -809,22 +822,37 @@ const handleBatchDelete = async () => {
   const lightboxWasOpen = !!lightboxItem.value && targets.some((t) => t.id === lightboxItem.value!.id)
   const prevLightboxIndex = lightboxIndex.value
   const purgeSuffix = trashMode.value ? '&purge=1' : ''
+  // 分块提交（≤40 id/批）："全选全部"可达数百条，单条 URL 超长会整批 4xx
+  const chunks: ImageRecord[][] = []
+  for (let i = 0; i < targets.length; i += 40) chunks.push(targets.slice(i, i + 40))
   try {
-    const { data } = await axios.delete(`/image-records?${idsParams(targets)}${purgeSuffix}`, { baseURL: '' })
-    if (data.code === 0) {
+    let ok = 0
+    let fail = 0
+    let sourceFailed = 0
+    let reqFailed = false
+    for (const chunk of chunks) {
+      const { data } = await axios.delete(`/image-records?${idsParams(chunk)}${purgeSuffix}`, { baseURL: '' })
+      if (data.code !== 0) {
+        reqFailed = true
+        fail += chunk.length
+        continue
+      }
+      ok += data.data?.ok ?? chunk.length
+      fail += data.data?.fail ?? 0
+      sourceFailed += data.data?.sourceFailed ?? 0
+    }
+    if (!reqFailed) {
       const done = new Set(targets.map((i) => i.id))
       list.value = list.value.filter((row) => !done.has(row.id))
       clearSelection()
       snapLightboxAfterRemoval(lightboxWasOpen, prevLightboxIndex)
       fetchList(true)
-      const ok = data.data?.ok ?? targets.length
-      const fail = data.data?.fail ?? 0
       if (fail === 0 && trashMode.value) {
-        // CNB 源文件删除已在服务端 purge 流程中联动执行（尽力而为）
-        if ((data.data?.cnbFailed ?? 0) === 0) {
-          toast.success(`已彻底删除 ${ok} 条记录（含 CNB 源文件）`)
+        // 源文件删除已在服务端 purge 流程中联动执行（尽力而为，多存储按标记分流）
+        if (sourceFailed === 0) {
+          toast.success(`已彻底删除 ${ok} 条记录（含源文件）`)
         } else {
-          toast.warning(`已删除 ${ok} 条记录；部分 CNB 源文件删除失败`)
+          toast.warning(`已删除 ${ok} 条记录；部分源文件删除失败`)
         }
       } else if (fail === 0) {
         toast.success(`已删除 ${ok} 条记录`, {
@@ -838,7 +866,7 @@ const handleBatchDelete = async () => {
         toast.warning(`${ok} 条删除成功，${fail} 条失败`)
       }
     } else {
-      toast.error(data.msg || '删除失败')
+      toast.error('部分删除请求失败，请刷新后重试')
     }
   } catch {
     toast.error('删除失败')
@@ -892,7 +920,9 @@ const handleImportFile = async (e: Event) => {
       toast.error('导入失败：备份文件需要是记录数组')
       return
     }
-    const items = parsed.filter((r) => r && r.id && r.url && r.createdAt)
+    // url 白名单：http(s) 或 / 开头的站内路径；阻断 javascript: 等存储型 href 注入
+    const urlOk = (u: unknown) => typeof u === 'string' && (/^https?:\/\//i.test(u) || u.startsWith('/'))
+    const items = parsed.filter((r) => r && r.id && urlOk(r.url) && r.createdAt)
     if (items.length === 0) {
       toast.error('导入失败：备份文件中没有有效记录')
       return
