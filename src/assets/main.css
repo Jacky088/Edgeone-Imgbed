@@ -143,6 +143,26 @@
     0 10px 20px -5px rgba(0, 0, 0, 0.3);
 }
 
+
+/* ========== toast 视口钉扎：任何滚动位置/内核差异下，恒定悬浮在窗口顶部居中 ========== */
+/* position: fixed 强制兜底（个别移动内核会把 fixed 当文档定位渲染）；
+   top 计入刘海安全区（env(safe-area-inset-top)）；left/transform 居中不依赖 v2 的 margin 方案 */
+/* 移动端窄屏：v2 会把胶囊宽度缩小后在 356px 容器里左对齐，造成肉眼可见的偏左，居中之 */
+@media (max-width: 600px) {
+  ol[data-sonner-toaster] [data-sonner-toast] {
+    margin-inline: auto !important;
+  }
+}
+
+ol[data-sonner-toaster] {
+  position: fixed !important;
+  top: calc(env(safe-area-inset-top, 0px) + 16px) !important;
+  right: auto !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  margin: 0 !important;
+}
+
 /* ========== 全站统一 toast 胶囊样式（vue-sonner） ========== */
 /* 日间：深色胶囊 + 白字；夜间：浅色胶囊 + 深字；关闭钮嵌在胶囊内右侧 */
 [data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
