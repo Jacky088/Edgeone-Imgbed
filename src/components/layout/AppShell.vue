@@ -432,10 +432,10 @@ const handleLogout = () => {
           <div class="flex shrink-0 items-center gap-1.5 sm:gap-2">
             <BucketBadge />
             <ThemeToggle compact />
-            <!-- 关于项目（与主题按钮同款图标风格，位于主题之后） -->
+            <!-- 关于项目（与主题按钮同款图标风格，位于主题之后；ml-1 与主题按钮留出误点间隔） -->
             <button
               @click="showAbout = true"
-              class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-gray-500 transition-all hover:bg-gray-100 hover:text-indigo-600 active:scale-95 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-indigo-300"
+              class="ml-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-gray-500 transition-all hover:bg-gray-100 hover:text-indigo-600 active:scale-95 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-indigo-300"
               title="关于项目"
             >
               <Info class="h-[18px] w-[18px]" />

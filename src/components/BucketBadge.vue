@@ -1,14 +1,39 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { Check, ChevronDown, Cloud, HardDrive } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { useBucket } from '@/composables/useBucket'
 
 // 顶栏存储桶切换器：列出 CNB + 已配置 S3 桶，选择本机上传目标（仅影响本浏览器，站点默认在设置页改）
+// 关闭策略：document 级 pointerdown 监听（点击穿透到目标，不吞事件）+ Esc；不再用全屏遮罩
 const { bucket, storages, globalActive, effectiveId, fetchBucket, selectStorage } = useBucket()
 fetchBucket()
 
+const rootRef = ref<HTMLElement | null>(null)
 const open = ref(false)
+
+const onDocPointerDown = (e: PointerEvent) => {
+  if (open.value && rootRef.value && !rootRef.value.contains(e.target as Node)) {
+    open.value = false
+  }
+}
+const onDocKeydown = (e: KeyboardEvent) => {
+  if (e.key === 'Escape' && open.value) open.value = false
+}
+
+watch(open, (v) => {
+  if (v) {
+    document.addEventListener('pointerdown', onDocPointerDown, true)
+    document.addEventListener('keydown', onDocKeydown)
+  } else {
+    document.removeEventListener('pointerdown', onDocPointerDown, true)
+    document.removeEventListener('keydown', onDocKeydown)
+  }
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onDocPointerDown, true)
+  document.removeEventListener('keydown', onDocKeydown)
+})
 
 const pick = (id: string) => {
   open.value = false
@@ -21,7 +46,7 @@ const pick = (id: string) => {
 
 <template>
   <!-- 全尺寸常驻：小窗口/移动端也保证上传目标可见（标题与按钮自动收窄让位） -->
-  <div v-if="bucket || storages.length > 0" class="relative">
+  <div ref="rootRef" v-if="bucket || storages.length > 0" class="relative">
     <button
       class="flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-2 text-xs font-medium text-gray-600 shadow-sm transition-all hover:border-indigo-200 hover:text-indigo-600 sm:px-3 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
       title="选择上传目标（本机生效）；站点默认在设置页修改"
@@ -31,9 +56,6 @@ const pick = (id: string) => {
       <span class="max-w-[88px] truncate sm:max-w-[160px]">{{ bucket || 'CNB 对象存储' }}</span>
       <ChevronDown class="h-3.5 w-3.5 opacity-60 transition-transform" :class="open ? 'rotate-180' : ''" />
     </button>
-
-    <!-- 点击外部关闭 -->
-    <div v-if="open" class="fixed inset-0 z-40" @click="open = false"></div>
 
     <!-- 下拉菜单：CNB + 全部 S3 桶 -->
     <div

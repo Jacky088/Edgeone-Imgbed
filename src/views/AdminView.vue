@@ -663,6 +663,22 @@ const copyText = async (text: string, msg: string) => {
   }
 }
 
+// 缩略图加载失败 → 统一占位图（防循环：已是占位符则隐藏 img 露出底色）
+const IMG_PLACEHOLDER =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 72"><rect width="96" height="72" fill="#e5e7eb"/><g fill="none" stroke="#9ca3af" stroke-width="3" stroke-linecap="round"><circle cx="34" cy="28" r="9"/><path d="M18 56l20-20 14 14 10-10 16 16"/></g></svg>`,
+  )
+const onThumbError = (e: Event) => {
+  const img = e.target as HTMLImageElement
+  if (img.dataset.fallback) {
+    img.style.visibility = 'hidden'
+    return
+  }
+  img.dataset.fallback = '1'
+  img.src = IMG_PLACEHOLDER
+}
+
 // 多选批量操作
 const selectedIds = ref<Set<string>>(new Set())
 const selectionVersion = ref(0) // Set 内部变更不触发响应式，用版本号驱动 computed 更新
@@ -1027,7 +1043,8 @@ onUnmounted(() => {
           <button
             v-if="!selectMode"
             @click="selectMode = true"
-            class="flex h-10 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
+            :disabled="list.length === 0"
+            class="flex h-10 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
             title="进入批量选择（移动端也可长按图片）"
           >
             <CheckSquare class="h-3.5 w-3.5" />
@@ -1046,7 +1063,8 @@ onUnmounted(() => {
           <div class="relative">
             <button
               @click="showBatchMenu = !showBatchMenu; showSortMenu = false; showTypeMenu = false; showSizeMenu = false"
-              class="flex h-10 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
+              :disabled="list.length === 0"
+              class="flex h-10 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
             >
               <SlidersHorizontal class="h-3.5 w-3.5" />
               <span class="hidden sm:inline">批量操作</span>
@@ -1122,7 +1140,8 @@ onUnmounted(() => {
           </div>
           <button
             @click="exportRecords(selectedList.length > 0 ? 'selected' : 'all')"
-            class="hidden h-10 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 sm:flex dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
+            :disabled="list.length === 0"
+            class="hidden h-10 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50 sm:flex dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
             :title="selectedList.length > 0 ? '导出选中记录' : '导出当前筛选的全部记录'"
           >
             <Download class="h-3.5 w-3.5" />
@@ -1538,6 +1557,7 @@ onUnmounted(() => {
                     :height="item.height"
                     loading="lazy"
                     decoding="async"
+                    @error="onThumbError"
                     class="h-full w-full select-none object-cover transition-transform duration-300 group-hover:scale-105"
                   />
                 </button>
@@ -1800,6 +1820,7 @@ onUnmounted(() => {
                   :src="item.thumbnailUrl || item.url"
                   :width="item.width"
                   :height="item.height"
+                  @error="onThumbError"
                   class="h-full w-full select-none rounded-lg object-cover"
                   alt="preview"
                   loading="lazy"
@@ -1898,7 +1919,7 @@ onUnmounted(() => {
         <AlertCircle class="h-5 w-5 shrink-0 mt-0.5" />
         <p>
           {{ trashMode
-            ? '回收站中的记录保留 30 天后自动清除；「彻底删除」会同步删除 CNB 上的原图文件（个别删除失败时仅移除记录，可用设置页「孤儿文件扫描」兜底清理）。'
+            ? '回收站中的记录保留 30 天后自动清除；「彻底删除」会同步删除源文件（多存储按记录标记分流，个别删除失败时仅移除记录，可用「孤儿清理」页兜底清理）。'
             : '删除会移入回收站（保留 30 天，可随时恢复）；在回收站彻底删除时才同步删除 CNB 上的原图文件。' }}
         </p>
       </div>

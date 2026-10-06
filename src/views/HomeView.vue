@@ -277,6 +277,22 @@ const recentAction = async (item: RecentItem, action: 'link' | 'copy' | 'code' |
   }
 }
 
+// 最近上传缩略图加载失败 → 统一占位图（防循环）
+const IMG_PLACEHOLDER =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 72"><rect width="96" height="72" fill="#e5e7eb"/><g fill="none" stroke="#9ca3af" stroke-width="3" stroke-linecap="round"><circle cx="34" cy="28" r="9"/><path d="M18 56l20-20 14 14 10-10 16 16"/></g></svg>`,
+  )
+const onThumbError = (e: Event) => {
+  const img = e.target as HTMLImageElement
+  if (img.dataset.fallback) {
+    img.style.visibility = 'hidden'
+    return
+  }
+  img.dataset.fallback = '1'
+  img.src = IMG_PLACEHOLDER
+}
+
 const goBatch = () => router.push('/admin')
 </script>
 
@@ -440,7 +456,7 @@ const goBatch = () => router.push('/admin')
                   loading="lazy"
                   decoding="async"
                   class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                />
+                @error="onThumbError" />
               </a>
             </div>
             <div class="p-3">
@@ -485,7 +501,7 @@ const goBatch = () => router.push('/admin')
                 loading="lazy"
                 decoding="async"
                 class="h-full w-full object-cover"
-              />
+              @error="onThumbError" />
             </a>
             <div class="min-w-0 flex-1">
               <p class="truncate text-xs font-semibold text-gray-800 sm:text-sm dark:text-gray-100" :title="item.name">{{ item.name }}</p>
