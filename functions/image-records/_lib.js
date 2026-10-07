@@ -498,7 +498,9 @@ async function listCnbImgAssets(env) {
       for (const item of list) {
         if (item?.record_type === 'slug_img') {
           const path = normalizeAssetPath(item.path)
-          if (path) assets.push({ path, size: Number(item.size_in_byte) || 0, createdAt: String(item.created_at || '') })
+          if (path) {
+            assets.push({ path, size: Number(item.size_in_byte) || 0, createdAt: String(item.created_at || '') })
+          }
         } else {
           others++
         }

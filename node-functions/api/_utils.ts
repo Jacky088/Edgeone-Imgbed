@@ -183,6 +183,12 @@ const CNB_ASSETS_PAGE_SIZE = 100
 const CNB_ASSETS_MAX_PAGES = 30 // 单次汇总上限 3000 个资产，超出标记 truncated
 let storageCache: { at: number; data: CnbStorageUsage } | null = null
 
+/** 主图判定：缩略图（*_thumb.webp）随主图成对上传，计数时排除（体积仍全量汇总）；无路径不计 */
+export function isMainImagePath(path: string): boolean {
+  const p = String(path || '')
+  return p.length > 0 && !/_thumb\.webp$/i.test(p)
+}
+
 /** 分页汇总仓库图片总量；失败返回 { ok:false }（独立降级，不阻塞用量/额度展示） */
 async function sumCnbImageAssets(
   slug: string,
@@ -204,8 +210,11 @@ async function sumCnbImageAssets(
       if (!Array.isArray(list)) return { ok: false, reason: 'upstream' }
       for (const item of list) {
         if (item.record_type === 'slug_img') {
-          count++
           usedBytes += Number(item.size_in_byte) || 0
+          // 计数只算主图：缩略图（*_thumb.webp）随主图成对上传，各算一张会把"6 张"报成 12
+          if (isMainImagePath(item.path)) {
+            count++
+          }
         }
       }
       if (list.length < CNB_ASSETS_PAGE_SIZE) {

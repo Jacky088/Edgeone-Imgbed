@@ -12,6 +12,7 @@ import {
 } from '../node-functions/api/_utils'
 import { verifyAuthToken as verifyAuthTokenEdge } from '../functions/image-records/_lib.js'
 import { createSharedWindowLimiter, sanitizeLimitKey } from '../node-functions/api/_middleware'
+import { isMainImagePath } from '../node-functions/api/_utils'
 
 // _utils.ts 顶层 import crypto from 'node:crypto'，Node 环境直接可跑
 beforeAll(() => {
@@ -226,5 +227,39 @@ describe('isValidImgPath', () => {
   })
   it('拒绝超长路径', () => {
     expect(isValidImgPath('a/'.repeat(300) + 'x.png')).toBe(false)
+  })
+})
+
+describe('isMainImagePath（CNB 实测计数口径：缩略图不计张数）', () => {
+  it('主图计入，_thumb.webp 缩略图排除', () => {
+    expect(isMainImagePath('c6Gkt1vcv9Plq4yxXwa1sB/20261007-094600.webp')).toBe(true)
+    expect(isMainImagePath('c6Gkt1vcv9Plq4yxXwa1sB/20261007-094600_thumb.webp')).toBe(false)
+  })
+
+  it('大小写不敏感；空/缺失路径一律不计（防畸形资产虚增计数）', () => {
+    expect(isMainImagePath('a/b.PNG_THUMB.WEBP')).toBe(false)
+    expect(isMainImagePath('')).toBe(false)
+    expect(isMainImagePath(undefined as unknown as string)).toBe(false)
+  })
+
+  it('6 主图 + 6 缩略图 → 计数 6、体积 12 份全量（模拟资产清单）', () => {
+    const list = [
+      { record_type: 'slug_img', path: 'd/1.webp', size_in_byte: 100 },
+      { record_type: 'slug_img', path: 'd/1_thumb.webp', size_in_byte: 10 },
+      { record_type: 'slug_img', path: 'd/2.png', size_in_byte: 200 },
+      { record_type: 'slug_img', path: 'd/2_thumb.webp', size_in_byte: 20 },
+      { record_type: 'slug_img', path: 'd/3.jpg', size_in_byte: 300 },
+      { record_type: 'slug_img', path: 'd/3_thumb.webp', size_in_byte: 30 },
+      { record_type: 'slug_img', path: 'd/4.webp', size_in_byte: 400 },
+      { record_type: 'slug_img', path: 'd/4_thumb.webp', size_in_byte: 40 },
+      { record_type: 'slug_img', path: 'd/5.png', size_in_byte: 500 },
+      { record_type: 'slug_img', path: 'd/5_thumb.webp', size_in_byte: 50 },
+      { record_type: 'slug_img', path: 'd/6.jpg', size_in_byte: 600 },
+      { record_type: 'slug_img', path: 'd/6_thumb.webp', size_in_byte: 60 },
+    ]
+    const mains = list.filter((i) => isMainImagePath(i.path))
+    const totalBytes = list.reduce((s, i) => s + i.size_in_byte, 0)
+    expect(mains).toHaveLength(6)
+    expect(totalBytes).toBe(2310) // 体积仍全量（主图+缩略图都占空间）
   })
 })
