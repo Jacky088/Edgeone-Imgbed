@@ -327,15 +327,19 @@ async function snapshot(force = false, verify = false) {
 // 惰性清理：软删除超过保留期的记录物理移除（记录本体 + 索引条目同步清除）。
 // cnbCleanup=true 时顺带删除 CNB 原图（每次调用有上限，避免读路径被网络请求拖垮；
 // 失败仅留孤儿文件，可由孤儿扫描兜底）。需 env 提供 SLUG_IMG/TOKEN_IMG。
-const CNB_PURGE_MAX_RECORDS = 10
+const CNB_PURGE_MAX_RECORDS = 20
 
 async function purgeExpired(records, env = null, cnbCleanup = false) {
   const now = Date.now()
-  const expired = records.filter(
+  const expiredAll = records.filter(
     (r) => r.deletedAt && now - r.deletedAt > SOFT_DELETE_TTL_MS,
   )
-  if (expired.length === 0) return records
-  // 本体删除分批（100/批）：长期未访问后首次读取可能积压大量到期记录，避免一次 KV 风暴
+  if (expiredAll.length === 0) return records
+  // 每轮只处理前 N 条，且本轮内"源文件删除"与"记录体删除"严格同步：
+  // 先删该条的源文件、再删记录体——绝不出现"记录已删、源文件成孤儿"的窗口
+  //（旧实现先删全部记录体、只清理前 10 条源文件，超出部分永久失去记录引用且无法对账）。
+  // 积压的过期记录留在回收站，由后续每次读取继续按批处理
+  const expired = expiredAll.slice(0, CNB_PURGE_MAX_RECORDS)
   for (let i = 0; i < expired.length; i += 100) {
     await Promise.all(
       expired.slice(i, i + 100).map((r) => IMG_RECORDS_KV.delete(recordKeyOf(safeIdOf(r.id)))),
@@ -347,7 +351,7 @@ async function purgeExpired(records, env = null, cnbCleanup = false) {
   await writeIndex(buildIndex(rest))
   if (cnbCleanup && env) {
     // 多存储分流：CNB 路径直接删，S3 路径（带 s3-{id}/ 标记）委托 node 内部端点（SigV4 单一实现在 node 侧）
-    const { cnbPaths, s3Paths } = splitSourcePaths(expired.slice(0, CNB_PURGE_MAX_RECORDS))
+    const { cnbPaths, s3Paths } = splitSourcePaths(expired)
     if (cnbPaths.length > 0) {
       try {
         await deleteCnbImgFiles(env, cnbPaths)

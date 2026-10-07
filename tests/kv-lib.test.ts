@@ -13,7 +13,7 @@ import {
   INDEX_SHARD_PREFIX,
 } from '../functions/image-records/_lib.js'
 import { onRequest } from '../functions/image-records/index.js'
-import { normalizeSiteSettings, buildStorageBreakdown, validateBucketInput } from '../functions/image-records/_lib.js'
+import { normalizeSiteSettings, buildStorageBreakdown, validateBucketInput, purgeExpired } from '../functions/image-records/_lib.js'
 
 const now = Date.now()
 const records = [
@@ -498,5 +498,60 @@ describe('validateBucketInput 空间配额（quotaGb）', () => {
   })
   it('超大值 → 拒绝', () => {
     expect(validateBucketInput({ ...base, quotaGb: 1024 * 101 }, doc).ok).toBe(false)
+  })
+})
+
+describe('purgeExpired（到期清理：源文件与记录体同步删除）', () => {
+  function makeFakeKV() {
+    const store = new Map<string, string>()
+    return {
+      store,
+      get: async (k) => store.get(k) ?? null,
+      put: async (k, v) => store.set(k, String(v)),
+      delete: async (k) => store.delete(k),
+    }
+  }
+  let kv: ReturnType<typeof makeFakeKV> | null = null
+  const now = Date.now()
+  const DAY = 86400000
+
+  beforeEach(() => {
+    kv = makeFakeKV()
+    ;(globalThis as any).IMG_RECORDS_KV = kv
+  })
+  afterEach(() => {
+    delete (globalThis as any).IMG_RECORDS_KV
+    kv = null
+  })
+
+  it('每轮只处理前 20 条，且这些记录的记录体同步删除（积压分批消化，源文件不落单）', async () => {
+    const records = []
+    for (let i = 0; i < 25; i++) {
+      records.push({
+        id: 'exp' + i, name: 'e' + i + '.png',
+        url: 'https://x.example.com/api/img/s3-b/e' + i + '.png',
+        size: 10, type: 'image/png', createdAt: now - i, deletedAt: now - 40 * DAY,
+      })
+      kv!.store.set('image_exp' + i, JSON.stringify(records[i]))
+    }
+    records.push({ id: 'keep1', name: 'k.png', url: 'https://x.example.com/api/img/keep.png', size: 5, type: 'image/png', createdAt: now })
+
+    const out = await purgeExpired(records, null, true)
+
+    // 本轮只消化 20 条：剩余 5 条过期记录留在回收站等下一轮，正常记录不受影响
+    expect(out.filter((r) => r.deletedAt)).toHaveLength(5)
+    expect(out.filter((r) => !r.deletedAt)).toHaveLength(1)
+    for (let i = 0; i < 20; i++) expect(kv!.store.has('image_exp' + i)).toBe(false)
+    for (let i = 20; i < 25; i++) expect(kv!.store.has('image_exp' + i)).toBe(true)
+  })
+
+  it('无 env 配置时记录体仍正常清理（源文件删除如实计失败，不阻塞）', async () => {
+    const records = [
+      { id: 'old1', name: 'a.png', url: 'https://x.example.com/api/img/a.png', size: 1, type: 'image/png', createdAt: now - DAY, deletedAt: now - 40 * DAY },
+    ]
+    kv!.store.set('image_old1', JSON.stringify(records[0]))
+    const out = await purgeExpired(records, null, true)
+    expect(out).toHaveLength(0)
+    expect(kv!.store.has('image_old1')).toBe(false)
   })
 })

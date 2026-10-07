@@ -39,6 +39,7 @@ import { copyTextFallback } from '@/utils/clipboard'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 import { flushPendingRecords } from '@/utils/pendingRecords'
 import { useGlobalStats } from '@/composables/useGlobalStats'
+import { useStorageUsage } from '@/composables/useStorageUsage'
 import AppShell from '@/components/layout/AppShell.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
@@ -360,6 +361,8 @@ const daysLeftClass = (deletedAt: number) => {
 
 // 全站侧栏存储卡同步：本页 ?stats=1 顺带拿到的统计直接写入全局，省一次请求
 const { stats: globalStats } = useGlobalStats()
+// 彻底删除/恢复后强制刷新侧栏存储卡（refresh=1 绕过服务端 10 分钟缓存，张数立即回落）
+const { fetchUsage } = useStorageUsage()
 const syncGlobalStats = () => { if (stats.value) globalStats.value = stats.value }
 
 // 回收站页头提示：删除仅移除记录，软删除原图仍占用 CNB 存储；并给出最早一批的清理倒计时
@@ -369,7 +372,7 @@ const trashFootprintText = computed(() => {
   if (size > 0) parts.push(`原图仍占用 CNB 存储 ${formatCompactSize(size)}`)
   const deletedAts = list.value.map((r) => r.deletedAt).filter((d): d is number => !!d)
   if (deletedAts.length > 0) parts.push(`最早一批剩 ${daysLeft(Math.min(...deletedAts))} 天`)
-  return `${parts.length > 0 ? parts.join('，') + '；' : ''}30 天后自动清除，可在此恢复`
+  return `${parts.length > 0 ? parts.join('，') + '；' : ''}30 天后自动清除并联动删除源文件，期间可在此恢复`
 })
 
 // 列表与统计一次请求拿全（KV 侧单次全表扫描 + ?stats=1 顺带统计）；quiet 静默刷新，不闪骨架屏
@@ -554,6 +557,13 @@ const onKeydown = (e: KeyboardEvent) => {
   }
 }
 
+// 删除/恢复后同步刷新侧栏与首页统计；彻底删除（purge）额外强制刷新存储卡
+//（实测张数来自 CNB 资产清单，refresh=1 绕过服务端 10 分钟缓存，张数立即回落）
+const refreshStorageCards = (purged = trashMode.value) => {
+  useGlobalStats().refreshStats()
+  if (purged) fetchUsage(true)
+}
+
 // 单条删除：正常列表软删除进回收站（toast 可撤销），回收站里先确认再彻底删除
 // （源文件删除已下沉到边缘函数 purge 流程，失败数由响应 sourceFailed 带回，多存储按记录标记分流）
 const softDelete = async (item: ImageRecord) => {
@@ -582,6 +592,7 @@ const softDelete = async (item: ImageRecord) => {
       }
       snapLightboxAfterRemoval(lightboxWasOpen, prevLightboxIndex)
       fetchList(true)
+      refreshStorageCards()
     } else {
       toast.error(data.msg)
     }
@@ -619,6 +630,7 @@ const restoreRecords = async (items: ImageRecord[], successMsg: string) => {
       list.value = list.value.filter((row) => !done.has(row.id))
       toast.success(fail === 0 ? successMsg : `${ok} 条恢复成功，${fail} 条失败`)
       fetchList(true)
+      refreshStorageCards(false)
     } else {
       toast.error('恢复失败')
     }
@@ -863,6 +875,7 @@ const handleBatchDelete = async () => {
       clearSelection()
       snapLightboxAfterRemoval(lightboxWasOpen, prevLightboxIndex)
       fetchList(true)
+      refreshStorageCards()
       if (fail === 0 && trashMode.value) {
         // 源文件删除已在服务端 purge 流程中联动执行（尽力而为，多存储按标记分流）
         if (sourceFailed === 0) {
@@ -1919,8 +1932,8 @@ onUnmounted(() => {
         <AlertCircle class="h-5 w-5 shrink-0 mt-0.5" />
         <p>
           {{ trashMode
-            ? '回收站中的记录保留 30 天后自动清除；「彻底删除」会同步删除源文件（多存储按记录标记分流，个别删除失败时仅移除记录，可用「孤儿清理」页兜底清理）。'
-            : '删除会移入回收站（保留 30 天，可随时恢复）；在回收站彻底删除时才同步删除 CNB 上的原图文件。' }}
+            ? '回收站中的记录保留 30 天，到期自动清除并联动删除源文件（多存储按记录标记分流，CNB 与 S3 桶都会清理）；「彻底删除」行为相同，个别删除失败时仅移除记录，可用「孤儿清理」页兜底清理。'
+            : '删除会移入回收站（保留 30 天，可随时恢复）；彻底删除或到期自动清除时才会同步删除源文件。' }}
         </p>
       </div>
     </div>
