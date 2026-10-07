@@ -45,8 +45,9 @@ const { stats: globalStats, fetchRecentWithStats } = useGlobalStats()
 // CNB 官方实测（与侧栏存储卡主块同源同口径）
 const { data: usageData } = useStorageUsage()
 
-// 当前上传目标的展示统计：CNB 优先官方实测（images 不可读时回退记录累计），
-// S3 桶用记录聚合——保证首页统计卡与侧栏存储卡数字一致
+// 当前上传目标的展示统计：CNB 优先官方实测（与侧栏同源；images 不可读回退组织用量，再回退记录累计），
+// S3 桶用记录聚合——保证首页统计卡与侧栏存储卡数字一致。
+// CNB 配额同源取官方组织额度（object/git quota 之和，与侧栏一致），非 CNB 用桶配置配额（不设 = ♾️）
 const activeBucketStats = computed(() => {
   if (effectiveId.value === 'cnb') {
     const images = usageData.value?.cnb?.images
@@ -63,9 +64,18 @@ const activeBucketLabel = computed(() =>
     ? 'CNB 存储'
     : storages.value.find((s) => s.id === effectiveId.value)?.label || '当前存储桶',
 )
-const activeQuotaBytes = computed(
-  () => storages.value.find((s) => s.id === effectiveId.value)?.quotaBytes ?? null,
-)
+const activeQuotaBytes = computed(() => {
+  if (effectiveId.value === 'cnb') {
+    // 与侧栏 quotaBytes 同规则：组织对象存储 + git 额度（quota 为 null 时侧栏显示"未知"，此处显示 ♾️）
+    const cnb = usageData.value?.cnb
+    if (cnb?.available) {
+      const total = (cnb.object?.quotaBytes ?? 0) + (cnb.git?.quotaBytes ?? 0)
+      return total > 0 ? total : null
+    }
+    return null
+  }
+  return storages.value.find((s) => s.id === effectiveId.value)?.quotaBytes ?? null
+})
 const activeUsagePct = computed(() =>
   activeQuotaBytes.value
     ? Math.round(((activeBucketStats.value?.size ?? 0) / activeQuotaBytes.value) * 100)
