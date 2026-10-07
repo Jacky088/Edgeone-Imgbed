@@ -35,15 +35,25 @@ import { copyTextFallback } from '@/utils/clipboard'
 import { formatCompactSize, formatCompactCount, formatRecentTime } from '@/utils/format'
 import { useBucket } from '@/composables/useBucket'
 import { useGlobalStats } from '@/composables/useGlobalStats'
+import { useStorageUsage } from '@/composables/useStorageUsage'
 import { useUploadSettings } from '@/composables/useUploadSettings'
 import { flushPendingRecords } from '@/utils/pendingRecords'
 
 const { fetchBucket, effectiveId, storages } = useBucket()
 // 首页 recent=4 与侧栏统计共用同一次请求（fetchRecentWithStats 内部去重合并）
 const { stats: globalStats, fetchRecentWithStats } = useGlobalStats()
+// CNB 官方实测（与侧栏存储卡主块同源同口径）
+const { data: usageData } = useStorageUsage()
 
-// 当前上传目标的分桶统计（云端上传记录聚合，按桶独立计账）；配额来自桶配置（不设 = ♾️）
+// 当前上传目标的展示统计：CNB 优先官方实测（images 不可读时回退记录累计），
+// S3 桶用记录聚合——保证首页统计卡与侧栏存储卡数字一致
 const activeBucketStats = computed(() => {
+  if (effectiveId.value === 'cnb') {
+    const images = usageData.value?.cnb?.images
+    if (images) return { count: images.count, size: images.usedBytes }
+    const obj = usageData.value?.cnb?.object
+    if (obj) return { count: globalStats.value?.count ?? 0, size: obj.usedBytes }
+  }
   const bs = globalStats.value?.byStorage
   if (!bs) return null
   return bs[effectiveId.value] ?? { count: 0, size: 0 }
@@ -95,7 +105,7 @@ const loadingStats = ref(true)
 const statCards = computed(() => [
   {
     label: '已上传图片',
-    sub: `${activeBucketLabel.value} · 累计（含回收站）`,
+    sub: `${activeBucketLabel.value} · ${effectiveId.value === 'cnb' ? '实测' : '累计（含回收站）'}`,
     value: activeBucketStats.value ? formatCompactCount(activeBucketStats.value.count) : '—',
     icon: Cloud,
     tint: 'bg-indigo-50 text-indigo-500 dark:bg-indigo-500/15 dark:text-indigo-300',
