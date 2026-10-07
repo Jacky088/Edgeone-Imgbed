@@ -21,7 +21,7 @@ import {
   writeStorageConfig,
   maskBucket,
   validateBucketInput,
-  splitSourcePaths,
+  recordSources,
   verifyInternalAuth,
   deleteS3ViaNode,
   normalizeSiteSettings,
@@ -436,13 +436,29 @@ export async function onRequest({ request, env }) {
         const key = keyOf(targets[0])
         const record = await IMG_RECORDS_KV.get(key, { type: 'json' })
         if (!record) return json(0, '已删除', null) // 幂等：重复删除不再 404
-        let sourceFailed = 0
         if (purge) {
+          // 先删源文件（CNB + S3），全部成功才删记录体；
+          // 有失败则记录保留在回收站（deletedAt 保持），用户可重试彻底删除
+          const sources = recordSources(record)
+          const cnbPaths = sources.filter((x) => x.kind === 'cnb').map((x) => x.path)
+          const s3Paths = sources.filter((x) => x.kind === 's3').map((x) => x.path)
+          let okCnb = new Set()
+          let okS3 = new Set()
+          if (cnbPaths.length > 0) {
+            const res = await deleteCnbImgFiles(env, cnbPaths)
+            okCnb = new Set(res.ok)
+          }
+          if (s3Paths.length > 0) {
+            const res = await deleteS3ViaNode(env, s3Paths)
+            okS3 = new Set(res.ok)
+          }
+          const fullyPurged = sources.every((x) =>
+            (x.kind === 'cnb' ? okCnb : okS3).has(x.path),
+          )
+          if (!fullyPurged) {
+            return json(0, '源文件删除失败，记录已保留在回收站，可重试', { sourceFailed: 1, kept: 1 })
+          }
           await IMG_RECORDS_KV.delete(key)
-          // 多存储分流：CNB 直接删，S3 委托 node 内部端点（失败数合并上报）
-          const { cnbPaths, s3Paths } = splitSourcePaths([record])
-          if (cnbPaths.length > 0) sourceFailed += (await deleteCnbImgFiles(env, cnbPaths)).failed
-          if (s3Paths.length > 0) sourceFailed += (await deleteS3ViaNode(env, s3Paths)).failed.length
         } else {
           record.deletedAt = Date.now()
           await IMG_RECORDS_KV.put(key, JSON.stringify(record))
@@ -451,16 +467,20 @@ export async function onRequest({ request, env }) {
         const index = await readIndex()
         if (index) {
           const pos = index.findIndex((r) => r.id === record.id)
-          if (pos >= 0) {
-            if (purge) index.splice(pos, 1)
-            else index[pos] = { ...index[pos], deletedAt: record.deletedAt }
+          if (pos >= 0 && purge) {
+            index.splice(pos, 1)
+            await writeIndex(index)
+          } else if (pos >= 0) {
+            index[pos] = { ...index[pos], deletedAt: record.deletedAt }
             await writeIndex(index)
           }
         }
-        return json(0, purge ? '已彻底删除' : '已移入回收站', purge ? { sourceFailed } : null)
+        return json(0, purge ? '已彻底删除' : '已移入回收站', purge ? { sourceFailed: 0 } : null)
       }
       let ok = 0
-      const touched = [] // { id, deletedAt?, purge }
+      let fail = 0
+      let sourceFailed = 0
+      let touched = [] // { id, deletedAt?, purge }
       const records = [] // 待删除源文件的记录（彻底删除时用）
       for (const id of targets) {
         const key = keyOf(id)
@@ -468,7 +488,6 @@ export async function onRequest({ request, env }) {
         if (!record) continue
         if (purge) {
           records.push(record)
-          await IMG_RECORDS_KV.delete(key)
           touched.push({ id: record.id, purge: true })
         } else {
           record.deletedAt = Date.now()
@@ -477,8 +496,8 @@ export async function onRequest({ request, env }) {
         }
         ok++
       }
-      // 索引直接按 id 维护（快路径不读本体，不能依赖对账回写）
-      if (ok > 0) {
+      // 软删除：索引直接按 id 维护（快路径不读本体，不能依赖对账回写）
+      if (ok > 0 && !purge) {
         const index = await readIndex()
         if (index) {
           let changed = false
@@ -486,8 +505,7 @@ export async function onRequest({ request, env }) {
             const pos = index.findIndex((r) => r.id === t.id)
             if (pos < 0) continue
             changed = true
-            if (t.purge) index.splice(pos, 1)
-            else index[pos] = { ...index[pos], deletedAt: t.deletedAt }
+            index[pos] = { ...index[pos], deletedAt: t.deletedAt }
           }
           if (changed) await writeIndex(index)
         } else {
@@ -495,15 +513,63 @@ export async function onRequest({ request, env }) {
           await snapshot()
         }
       }
-      let sourceFailed = 0
+      // 彻底删除：先删源文件（CNB + S3，逐路径结果），全部成功的记录才删记录体；
+      // 有失败的记录保留在回收站（deletedAt 保持），用户可重试
       if (purge && records.length > 0) {
-        const { cnbPaths, s3Paths } = splitSourcePaths(records)
-        if (cnbPaths.length > 0) sourceFailed += (await deleteCnbImgFiles(env, cnbPaths)).failed
-        if (s3Paths.length > 0) sourceFailed += (await deleteS3ViaNode(env, s3Paths)).failed.length
+        const cnbPaths = [...new Set(records.flatMap((r) => recordSources(r).filter((x) => x.kind === 'cnb').map((x) => x.path)))]
+        const s3Paths = [...new Set(records.flatMap((r) => recordSources(r).filter((x) => x.kind === 's3').map((x) => x.path)))]
+        let okCnb = new Set()
+        let okS3 = new Set()
+        if (cnbPaths.length > 0) {
+          const res = await deleteCnbImgFiles(env, cnbPaths)
+          okCnb = new Set(res.ok)
+        }
+        if (s3Paths.length > 0) {
+          const res = await deleteS3ViaNode(env, s3Paths)
+          okS3 = new Set(res.ok)
+        }
+        const fullyPurged = records.filter((r) =>
+          recordSources(r).every((x) => (x.kind === 'cnb' ? okCnb : okS3).has(x.path)),
+        )
+        sourceFailed = records.length - fullyPurged.length
+        if (fullyPurged.length > 0) {
+          const purgedIds = new Set(fullyPurged.map((r) => r.id))
+          for (let i = 0; i < fullyPurged.length; i += 100) {
+            await Promise.all(
+              fullyPurged.slice(i, i + 100).map((r) => IMG_RECORDS_KV.delete(recordKeyOf(safeIdOf(r.id)))),
+            )
+          }
+          // 索引仅剔除完全清理的条目（保留的记录维持回收站标记不动）
+          const index = await readIndex()
+          if (index) {
+            let changed = false
+            for (const t of touched.filter((x) => purgedIds.has(x.id))) {
+              const pos = index.findIndex((r) => r.id === t.id)
+              if (pos < 0) continue
+              changed = true
+              index.splice(pos, 1)
+            }
+            if (changed) await writeIndex(index)
+          } else {
+            // 索引缺失：从本体扫描重建（本体已反映本次删除）
+            await snapshot()
+          }
+          touched = touched.filter((t) => purgedIds.has(t.id))
+          ok = fullyPurged.length
+          fail = targets.length - ok
+        } else {
+          touched = []
+          ok = 0
+          fail = targets.length
+        }
       }
-      return json(0, purge ? `已彻底删除 ${ok} 条记录` : `已删除 ${ok} 条记录`, {
+      return json(0, purge
+        ? sourceFailed > 0
+          ? `已彻底删除 ${ok} 条，${sourceFailed} 条源文件删除失败（记录已保留在回收站，可重试）`
+          : `已彻底删除 ${ok} 条记录`
+        : `已删除 ${ok} 条记录`, {
         ok,
-        fail: targets.length - ok,
+        fail,
         sourceFailed,
       })
     }

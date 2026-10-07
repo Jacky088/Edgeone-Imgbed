@@ -577,12 +577,15 @@ const softDelete = async (item: ImageRecord) => {
       params: trashMode.value ? { id: item.id, purge: 1 } : { id: item.id },
     })
     if (data.code === 0) {
-      list.value = list.value.filter((row) => row.id !== item.id)
+      // 源文件删除失败时服务端保留了记录，不本地移除，重新拉列表回到真实状态
+      const purgeKept = trashMode.value && (data.data?.sourceFailed ?? 0) > 0
+      if (!purgeKept) list.value = list.value.filter((row) => row.id !== item.id)
       if (trashMode.value) {
         if ((data.data?.sourceFailed ?? 0) === 0) {
           toast.success('已彻底删除（含源文件）')
         } else {
-          toast.warning('记录已彻底删除；部分源文件删除失败')
+          toast.warning('部分源文件删除失败，记录已保留在回收站，可重试')
+          fetchList(true)
         }
       } else {
         toast.success('已移入回收站，30 天内可恢复', {
@@ -878,10 +881,12 @@ const handleBatchDelete = async () => {
       refreshStorageCards()
       if (fail === 0 && trashMode.value) {
         // 源文件删除已在服务端 purge 流程中联动执行（尽力而为，多存储按标记分流）
+        // 部分失败时服务端保留了对应记录，重新拉列表让回收站回到真实状态
         if (sourceFailed === 0) {
           toast.success(`已彻底删除 ${ok} 条记录（含源文件）`)
         } else {
-          toast.warning(`已删除 ${ok} 条记录；部分源文件删除失败`)
+          toast.warning(`${sourceFailed} 条记录源文件删除失败，已保留在回收站，可重试`)
+          fetchList(true)
         }
       } else if (fail === 0) {
         toast.success(`已删除 ${ok} 条记录`, {

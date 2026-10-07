@@ -264,6 +264,7 @@ import { useBucket } from '@/composables/useBucket'
 
 // 本机上传目标（顶栏下拉）：随每个上传请求下发，服务端校验
 import { useGlobalStats } from '@/composables/useGlobalStats'
+import { useStorageUsage } from '@/composables/useStorageUsage'
 import { enqueuePendingRecord, type PendingRecord } from '@/utils/pendingRecords'
 import { hashBlob, lookupHash, rememberHash } from '@/utils/dedupeCache'
 
@@ -388,6 +389,7 @@ const { settings } = useUploadSettings()
 const { effectiveId, storages } = useBucket()
 // 分桶累计统计（配额前置校验用；服务端在上传接口仍会强制校验）
 const { stats: liveStats } = useGlobalStats()
+const { fetchUsage } = useStorageUsage()
 
 const tasks = ref<UploadTask[]>([])
 const rejectedFiles = ref<RejectedFile[]>([])
@@ -1096,6 +1098,10 @@ async function startUpload(): Promise<void> {
 
   // 批次收尾：成功记录统一落库（批量 50 条/批），失败部分进本地补写队列
   await flushRecordQueue()
+  // CNB 目标：实测张数来自官方资产清单（服务端 10 分钟缓存），上传后强制刷新让计数即时上涨
+  if (okCount > 0 && effectiveId.value === 'cnb') {
+    fetchUsage(true)
+  }
   // 记录落库成功后静默对账统计，侧栏数字与最近上传以服务端为准
   if (recordQueue.length === 0) {
     const { refreshStats } = useGlobalStats()

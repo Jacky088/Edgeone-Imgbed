@@ -335,38 +335,49 @@ async function purgeExpired(records, env = null, cnbCleanup = false) {
     (r) => r.deletedAt && now - r.deletedAt > SOFT_DELETE_TTL_MS,
   )
   if (expiredAll.length === 0) return records
-  // 每轮只处理前 N 条，且本轮内"源文件删除"与"记录体删除"严格同步：
-  // 先删该条的源文件、再删记录体——绝不出现"记录已删、源文件成孤儿"的窗口
-  //（旧实现先删全部记录体、只清理前 10 条源文件，超出部分永久失去记录引用且无法对账）。
-  // 积压的过期记录留在回收站，由后续每次读取继续按批处理
+  // 每轮只处理前 N 条。顺序：先删源文件（CNB + S3），全部成功的记录才删除记录体；
+  // 源文件删除失败的记录保留在回收站（deletedAt 保持），由后续每次读取自动重试——
+  // 绝不出现"记录已删、源文件成孤儿"的窗口（旧实现先删记录体、源文件尽力而为，
+  // 失败即永久失去记录引用；S3 桶无孤儿扫描，该文件将永远无法对账）。
   const expired = expiredAll.slice(0, CNB_PURGE_MAX_RECORDS)
-  for (let i = 0; i < expired.length; i += 100) {
-    await Promise.all(
-      expired.slice(i, i + 100).map((r) => IMG_RECORDS_KV.delete(recordKeyOf(safeIdOf(r.id)))),
-    )
-  }
-  const expiredIds = new Set(expired.map((r) => r.id))
-  const rest = records.filter((r) => !expiredIds.has(r.id))
-  // 快路径不再读本体对账，索引剔除必须在这里显式完成
-  await writeIndex(buildIndex(rest))
+
+  let okCnb = new Set()
+  let okS3 = new Set()
   if (cnbCleanup && env) {
+    const cnbPaths = [...new Set(expired.flatMap((r) => recordSources(r).filter((x) => x.kind === 'cnb').map((x) => x.path)))]
+    const s3Paths = [...new Set(expired.flatMap((r) => recordSources(r).filter((x) => x.kind === 's3').map((x) => x.path)))]
     // 多存储分流：CNB 路径直接删，S3 路径（带 s3-{id}/ 标记）委托 node 内部端点（SigV4 单一实现在 node 侧）
-    const { cnbPaths, s3Paths } = splitSourcePaths(expired)
     if (cnbPaths.length > 0) {
       try {
-        await deleteCnbImgFiles(env, cnbPaths)
+        const res = await deleteCnbImgFiles(env, cnbPaths)
+        okCnb = new Set(res.ok)
       } catch {
-        // 尽力而为：失败留待孤儿扫描兜底
+        // 尽力而为：失败留在回收站自动重试
       }
     }
     if (s3Paths.length > 0) {
       try {
-        await deleteS3ViaNode(env, s3Paths)
+        const res = await deleteS3ViaNode(env, s3Paths)
+        okS3 = new Set(res.ok)
       } catch {
-        // 尽力而为：失败留待孤儿扫描兜底
+        // 尽力而为：失败留在回收站自动重试
       }
     }
   }
+
+  // 逐条判定：全部源文件均已删除（或本就没有）→ 删除记录体；有失败 → 保留待重试
+  const fullyPurged = expired.filter((r) =>
+    recordSources(r).every((x) => (x.kind === 'cnb' ? okCnb : okS3).has(x.path)),
+  )
+  for (let i = 0; i < fullyPurged.length; i += 100) {
+    await Promise.all(
+      fullyPurged.slice(i, i + 100).map((r) => IMG_RECORDS_KV.delete(recordKeyOf(safeIdOf(r.id)))),
+    )
+  }
+  const purgedIds = new Set(fullyPurged.map((r) => r.id))
+  const rest = records.filter((r) => !purgedIds.has(r.id))
+  // 快路径不再读本体对账，索引剔除必须在这里显式完成（仅剔除已完全清理的条目）
+  await writeIndex(buildIndex(rest))
   return rest
 }
 
@@ -531,20 +542,21 @@ function isValidImgPath(p) {
   return /^[\p{L}\p{N}._\-/]+$/u.test(p)
 }
 
-// 分块并发删除 CNB 源文件；自身不抛出，返回 { ok, failed, skipped }。
-// 缺少 env 配置时所有有效路径计入 failed（如实上报"未删除"，不谎报成功）
+// 分块并发删除 CNB 源文件；自身不抛出，返回逐路径结果
+// { ok: string[], failed: string[], skipped: number }（404 视为成功）。
+// 缺少 env 配置时所有有效路径计入 failed（如实上报"未删除"，不谎报成功）。
 async function deleteCnbImgFiles(env, paths) {
+  const ok = []
+  const failed = []
   const slug = env?.SLUG_IMG
   const token = env?.TOKEN_IMG
   const all = Array.isArray(paths) ? paths : []
   const unique = [...new Set(all.filter((p) => typeof p === 'string' && isValidImgPath(p)))]
   const skipped = all.length - unique.length
   if (!slug || !token || unique.length === 0) {
-    return { ok: 0, failed: unique.length, skipped }
+    return { ok, failed: [...unique], skipped }
   }
 
-  let ok = 0
-  let failed = 0
   for (let i = 0; i < unique.length; i += CNB_DELETE_CHUNK) {
     const results = await Promise.all(
       unique.slice(i, i + CNB_DELETE_CHUNK).map(async (imgPath) => {
@@ -568,9 +580,8 @@ async function deleteCnbImgFiles(env, paths) {
         }
       }),
     )
-    for (const good of results) {
-      if (good) ok++
-      else failed++
+    for (let j = 0; j < results.length; j++) {
+      ;(results[j] ? ok : failed).push(unique[i + j])
     }
   }
   return { ok, failed, skipped }
@@ -705,6 +716,19 @@ function storageMarkerOf(recordUrl) {
   }
   const cnbPath = cnbImgPathOf(raw)
   return cnbPath ? { id: 'cnb', path: cnbPath } : null
+}
+
+// 单条记录的源文件描述列表：{ kind: 'cnb'|'s3', key: 桶id|'cnb', path }
+//（s3 的 path 为完整标记路径 s3-{id}/{key}；cnb 的 path 为裸 imgPath）
+function recordSources(record) {
+  const out = []
+  for (const u of [record?.url, record?.thumbnailUrl]) {
+    if (!u) continue
+    const t = storageMarkerOf(u)
+    if (!t) continue
+    out.push(t.id === 'cnb' ? { kind: 'cnb', key: 'cnb', path: t.path } : { kind: 's3', key: t.id, path: t.path })
+  }
+  return out
 }
 
 // 记录列表 → 按存储分组的源文件路径（主图 + 缩略图；S3 路径带完整标记，交 node 删除）
@@ -900,6 +924,7 @@ export {
   maskBucket,
   validateBucketInput,
   storageMarkerOf,
+  recordSources,
   splitSourcePaths,
   verifyInternalAuth,
   deleteS3ViaNode,

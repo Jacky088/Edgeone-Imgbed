@@ -357,15 +357,16 @@ describe('image-records 接口集成（模拟 KV）', () => {
     expect(get.data.data.map((r: any) => r.id)).toEqual(['rs1'])
   })
 
-  it('彻底删除：服务端联动删除 CNB 源文件，失败数如实上报；索引条目同步移除', async () => {
+  it('彻底删除：源文件删除失败时保留记录在回收站（可重试），成功时索引同步移除', async () => {
     await call('POST', '', { records: [rec('pg1')] })
-    // 测试 env 为空（无 SLUG_IMG/TOKEN_IMG）：有效路径计入 failed，不谎报成功
+    // 测试 env 为空（无 SLUG_IMG/TOKEN_IMG）：有效路径计入 failed，不谎报成功；
+    // 源文件删除失败 → 记录体保留在回收站，可重试彻底删除
     const del = await call('DELETE', '?id=pg1&purge=1')
     expect(del.data.code).toBe(0)
     expect(del.data.data.sourceFailed).toBe(1)
-    expect(kv!.store.has('image_pg1')).toBe(false)
+    expect(kv!.store.has('image_pg1')).toBe(true)
     const index = JSON.parse(kv!.store.get('image_records_index')!)
-    expect(index.find((r: any) => r.id === 'pg1')).toBeUndefined()
+    expect(index.find((r: any) => r.id === 'pg1')).toBeTruthy()
   })
 
   it('索引分片：超过单值上限时自动切分，读取端透明合并', async () => {
@@ -538,20 +539,19 @@ describe('purgeExpired（到期清理：源文件与记录体同步删除）', (
 
     const out = await purgeExpired(records, null, true)
 
-    // 本轮只消化 20 条：剩余 5 条过期记录留在回收站等下一轮，正常记录不受影响
-    expect(out.filter((r) => r.deletedAt)).toHaveLength(5)
+    // 测试 env 为空：源文件删除全部失败 → 全部保留在回收站（自动重试），记录体一个都不删
+    expect(out.filter((r) => r.deletedAt)).toHaveLength(25)
     expect(out.filter((r) => !r.deletedAt)).toHaveLength(1)
-    for (let i = 0; i < 20; i++) expect(kv!.store.has('image_exp' + i)).toBe(false)
-    for (let i = 20; i < 25; i++) expect(kv!.store.has('image_exp' + i)).toBe(true)
+    for (let i = 0; i < 25; i++) expect(kv!.store.has('image_exp' + i)).toBe(true)
   })
 
-  it('无 env 配置时记录体仍正常清理（源文件删除如实计失败，不阻塞）', async () => {
+  it('无 env 配置时源文件删除失败 → 记录保留在回收站待重试', async () => {
     const records = [
       { id: 'old1', name: 'a.png', url: 'https://x.example.com/api/img/a.png', size: 1, type: 'image/png', createdAt: now - DAY, deletedAt: now - 40 * DAY },
     ]
     kv!.store.set('image_old1', JSON.stringify(records[0]))
     const out = await purgeExpired(records, null, true)
-    expect(out).toHaveLength(0)
-    expect(kv!.store.has('image_old1')).toBe(false)
+    expect(out.filter((r) => r.id === 'old1')).toHaveLength(1)
+    expect(kv!.store.has('image_old1')).toBe(true)
   })
 })
