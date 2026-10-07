@@ -49,15 +49,17 @@ const { data: usageData } = useStorageUsage()
 // S3 桶用记录聚合——保证首页统计卡与侧栏存储卡数字一致。
 // CNB 配额同源取官方组织额度（object/git quota 之和，与侧栏一致），非 CNB 用桶配置配额（不设 = ♾️）
 const activeBucketStats = computed(() => {
-  if (effectiveId.value === 'cnb') {
-    const images = usageData.value?.cnb?.images
-    if (images) return { count: images.count, size: images.usedBytes }
-    const obj = usageData.value?.cnb?.object
-    if (obj) return { count: globalStats.value?.count ?? 0, size: obj.usedBytes }
-  }
   const bs = globalStats.value?.byStorage
-  if (!bs) return null
-  return bs[effectiveId.value] ?? { count: 0, size: 0 }
+  const recordStats = bs?.[effectiveId.value] ?? { count: 0, size: 0 }
+  if (effectiveId.value === 'cnb') {
+    // CNB：张数用记录口径（与图片列表一致；实测清单含缩略图且 UUID 命名无法区分），
+    // 占用优先官方实测（含缩略图与 PicGo 上传，更准）
+    const images = usageData.value?.cnb?.images
+    if (images) return { count: recordStats.count, size: images.usedBytes }
+    const obj = usageData.value?.cnb?.object
+    if (obj) return { count: recordStats.count, size: obj.usedBytes }
+  }
+  return recordStats
 })
 const activeBucketLabel = computed(() =>
   effectiveId.value === 'cnb'

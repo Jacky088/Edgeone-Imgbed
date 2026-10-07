@@ -33,7 +33,7 @@ const otherS3Backends = computed(() => s3Backends.value.filter((b) => b.id !== e
 const cnbRowBytes = computed(
   () => cnbUsage.value?.images?.usedBytes ?? cnbUsage.value?.object?.usedBytes ?? 0,
 )
-const cnbRowCount = computed(() => cnbUsage.value?.images?.count ?? null)
+const cnbRowCount = computed(() => globalStats.value?.byStorage?.cnb?.count ?? null)
 import { useBucket } from '@/composables/useBucket'
 import { startCloudSettingsSync } from '@/composables/useCloudSettingsSync'
 import { formatCompactSize } from '@/utils/format'
@@ -98,7 +98,11 @@ const usedBytes = computed(() => {
   if (!u?.available) return 0
   return u.images?.usedBytes ?? (u.object?.usedBytes ?? 0) + (u.git?.usedBytes ?? 0)
 })
-const usedCount = computed(() => cnbUsage.value?.images?.count ?? null)
+// 张数用记录口径（与图片列表一致；实测清单含缩略图且 UUID 命名无法区分）
+const usedCount = computed(() => {
+  const n = globalStats.value?.byStorage?.cnb?.count
+  return n ?? cnbUsage.value?.images?.count ?? null
+})
 const quotaBytes = computed(() => {
   const u = cnbUsage.value
   if (!u?.available) return 0
