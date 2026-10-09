@@ -218,8 +218,31 @@ export async function proxyS3Request(cfg: StorageBucket, key: string, res: any):
       await resp.arrayBuffer().catch(() => {})
       return res.status(413).json({ error: 'Image too large to proxy' })
     }
+    const s3Etag =
+      resp.headers.get('etag') ||
+      `"${crypto.createHash('md5').update(key + (contentLength || '')).digest('hex').slice(0, 16)}"`
+
     res.setHeader('Content-Type', contentType)
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+    res.setHeader('ETag', s3Etag)
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength)
+    }
+
+    // 协商缓存：客户端携带 If-None-Match 命中时直接 304
+    if (res.req?.headers?.['if-none-match'] === s3Etag) {
+      await resp.arrayBuffer().catch(() => {})
+      return res.status(304).end()
+    }
+
+    // HEAD 请求：只返回头，不流式传输 body
+    if (res.req?.method === 'HEAD') {
+      await resp.arrayBuffer().catch(() => {})
+      return res.status(200).end()
+    }
     if (resp.body) {
       const reader = resp.body.getReader()
       // 客户端断开时取消上游读取，避免 drain 永不到来而挂住实例

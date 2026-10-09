@@ -368,8 +368,31 @@ async function proxyImageRequest(
           return res.status(413).json({ error: 'Image too large to proxy' })
         }
 
+        const upstreamEtag =
+          response.headers.get('etag') ||
+          `"${crypto.createHash('md5').update(urlPath + (contentLength || '')).digest('hex').slice(0, 16)}"`
+
         res.setHeader('Content-Type', contentType)
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        res.setHeader('ETag', upstreamEtag)
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+        if (contentLength) {
+          res.setHeader('Content-Length', contentLength)
+        }
+
+        // 协商缓存：客户端携带 If-None-Match 命中时直接 304，不下载并输出 body
+        if (req?.headers?.['if-none-match'] === upstreamEtag) {
+          await response.arrayBuffer().catch(() => {})
+          return res.status(304).end()
+        }
+
+        // HEAD 请求：仅返回头部信息，不读取并传输 body 流
+        if (req?.method === 'HEAD') {
+          await response.arrayBuffer().catch(() => {})
+          return res.status(200).end()
+        }
         // 流式转发：边下边吐，不在内存里攒完整文件（内存占用从 O(文件) 降到 O(分片)）
         if (response.body) {
           const reader = response.body.getReader()

@@ -149,7 +149,7 @@ export function createSharedWindowLimiter(store: SharedWindowStore | null) {
 }
 
 // 生产单例：登录/上传等安全敏感接口使用（跨实例共享计数）
-const sharedLimiter = createSharedWindowLimiter(
+export const sharedLimiter = createSharedWindowLimiter(
   ((): SharedWindowStore | null => {
     const store = getSharedStore()
     if (!store) return null
@@ -204,11 +204,12 @@ export function securityHeaders(_req: Request, res: Response, next: NextFunction
   res.setHeader('X-Content-Type-Options', 'nosniff')
   // HTTPS 强制
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
-  // 内容安全策略：本服务只返回 JSON 与图片，使用最严格策略
-  // （X-XSS-Protection 已废弃，不再设置）
+  // 内容安全策略：本服务只返回 JSON 与图片，使用最严格策略与沙箱防护
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    "default-src 'none'; sandbox; frame-ancestors 'none'; base-uri 'none'",
   )
   next()
 }
+
+export { getClientIp }

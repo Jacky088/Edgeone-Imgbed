@@ -6,7 +6,7 @@
       class="group relative flex min-h-[220px] w-full cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-6 text-center transition-all duration-300 sm:min-h-[260px] sm:p-10"
       :class="[
         isDragging
-          ? 'scale-[1.01] border-indigo-500 bg-indigo-50/60 dark:bg-indigo-500/10'
+          ? 'scale-[1.01] border-indigo-500 bg-indigo-50/70 shadow-xl shadow-indigo-500/10 ring-4 ring-indigo-500/20 dark:bg-indigo-500/15'
           : 'border-gray-300 hover:border-indigo-400 hover:bg-indigo-50/30 dark:border-gray-700 dark:hover:border-indigo-500/50 dark:hover:bg-indigo-500/5',
       ]"
       @dragover.prevent="isDragging = true"
@@ -15,8 +15,11 @@
     >
       <input type="file" accept="image/*" multiple @change="onFileChange" class="hidden" />
       <div v-if="tasks.length === 0 || batchCompleted" class="flex flex-col items-center gap-3 transition-transform duration-300 group-hover:-translate-y-1">
-        <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-500 shadow-sm transition-colors group-hover:bg-indigo-100 sm:h-16 sm:w-16 dark:bg-indigo-500/15 dark:text-indigo-300 dark:group-hover:bg-indigo-500/25">
-          <UploadCloud class="h-7 w-7 sm:h-8 sm:w-8" />
+        <div
+          class="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-500 shadow-sm transition-all sm:h-16 sm:w-16 dark:bg-indigo-500/15 dark:text-indigo-300"
+          :class="isDragging ? 'scale-110 bg-indigo-100 text-indigo-600 dark:bg-indigo-500/30' : 'group-hover:bg-indigo-100 dark:group-hover:bg-indigo-500/25'"
+        >
+          <UploadCloud class="h-7 w-7 sm:h-8 sm:w-8 transition-transform duration-200" :class="isDragging ? 'scale-110' : ''" />
         </div>
         <div class="space-y-1">
           <p class="text-base font-bold text-gray-800 sm:text-lg dark:text-gray-100">
@@ -696,21 +699,30 @@ async function handleFiles(list: File[]): Promise<void> {
   }))
   errorMsg.value = ''
 
-  // 串行压缩（CPU 密集，避免并发卡顿）
-  for (let i = 0; i < tasks.value.length; i++) {
-    const t = tasks.value[i]
-    if (!t) continue
-    processingIndex.value = i + 1
-    t.status = 'processing'
-    try {
-      await processTaskFile(t)
-      t.status = 'ready'
-    } catch (err) {
-      console.error('图片处理失败:', err)
-      t.status = 'error'
-      t.errorMsg = err instanceof Error ? err.message : '图片处理失败'
+  // 适度并发压缩（双 Worker 并发，提高处理吞吐同时避免页面掉帧）
+  let compressCursor = 0
+  let completedCompressCount = 0
+  const compressWorker = async () => {
+    while (compressCursor < tasks.value.length) {
+      const idx = compressCursor++
+      const t = tasks.value[idx]
+      if (!t) continue
+      t.status = 'processing'
+      try {
+        await processTaskFile(t)
+        t.status = 'ready'
+      } catch (err) {
+        console.error('图片处理失败:', err)
+        t.status = 'error'
+        t.errorMsg = err instanceof Error ? err.message : '图片处理失败'
+      } finally {
+        completedCompressCount++
+        processingIndex.value = completedCompressCount
+      }
     }
   }
+  const COMPRESS_CONCURRENCY = Math.min(2, tasks.value.length)
+  await Promise.all(Array.from({ length: COMPRESS_CONCURRENCY }, compressWorker))
 }
 
 // 读取图片原始尺寸（原图直传时 canvas 压缩管线被跳过）

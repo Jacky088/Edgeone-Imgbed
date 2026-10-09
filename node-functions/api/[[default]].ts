@@ -32,7 +32,7 @@ import {
   verifyInternalAuth,
   type StorageBucket,
 } from './_storage'
-import { authMiddleware, rateLimiter, sharedRateLimiter, securityHeaders } from './_middleware'
+import { authMiddleware, rateLimiter, sharedRateLimiter, sharedLimiter, getClientIp, securityHeaders } from './_middleware'
 
 const upload = multer({
   limits: {
@@ -106,6 +106,14 @@ async function uploadOneImage(buffer: Buffer, fileName: string, contentType: str
 app.use((req, res, next) => {
   // 图片代理为高频路径，访问日志仅在 DEBUG_LOG=1 时输出，避免日志量随图片流量线性膨胀
   if (req.url && req.url.startsWith('/img/')) {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+      res.setHeader('Access-Control-Allow-Headers', '*')
+      res.setHeader('Access-Control-Max-Age', '86400')
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+      return res.status(204).end()
+    }
     if (process.env.DEBUG_LOG) {
       console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`)
     }
@@ -255,13 +263,18 @@ app.post(
 app.post(
   '/upload/picgo',
   sharedRateLimiter(UPLOAD_RATE_LIMIT, 60000),
-  (req, res, next) => {
+  async (req, res, next) => {
     const picgoToken = process.env.PICGO_TOKEN
     if (!picgoToken) {
       return res.status(404).json(reply(1, '未启用 API Token（需设置 PICGO_TOKEN 环境变量）', null))
     }
+    const ip = getClientIp(req)
+    if (await sharedLimiter(`picgo-fail:${ip}`, 5, 60000)) {
+      return res.status(429).json(reply(429, 'PicGo 认证失败次数过多，请稍后再试', null))
+    }
     const authHeader = req.headers.authorization || ''
     if (!authHeader.startsWith('Basic ')) {
+      await sharedLimiter(`picgo-fail:${ip}`, 5, 60000)
       return res.status(401).json(reply(401, '缺少 Basic 认证', null))
     }
     try {
@@ -271,10 +284,12 @@ app.post(
       const user = idx >= 0 ? decoded.slice(0, idx) : decoded
       const pass = idx >= 0 ? decoded.slice(idx + 1) : ''
       if (user !== 'api' || !securePasswordCompare(pass, picgoToken)) {
+        await sharedLimiter(`picgo-fail:${ip}`, 5, 60000)
         return res.status(401).json(reply(401, 'API Token 无效', null))
       }
       return next()
     } catch {
+      await sharedLimiter(`picgo-fail:${ip}`, 5, 60000)
       return res.status(401).json(reply(401, '认证头解析失败', null))
     }
   },

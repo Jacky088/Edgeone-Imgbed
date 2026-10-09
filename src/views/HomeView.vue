@@ -24,10 +24,12 @@ import {
   CalendarCheck,
   TriangleAlert,
   ArrowRight,
-  Link,
   Copy,
   FileCode2,
+  ZoomIn,
+  Check,
 } from 'lucide-vue-next'
+import ImageLightboxModal, { type LightboxImage } from '@/components/ImageLightboxModal.vue'
 import { useRouter } from 'vue-router'
 import axios from '@/utils/axios'
 import { buildFormats, type UploadResult, type LinkFormatKey } from '@/utils/formatLinks'
@@ -274,12 +276,52 @@ const filteredRecent = computed(() => {
   return recent.value.filter((item) => item.name.toLowerCase().includes(kw))
 })
 
-const recentAction = async (item: RecentItem, action: 'link' | 'copy' | 'code' | 'delete') => {
-  if (action === 'link' || action === 'copy') {
-    copyText(item.url, action === 'link' ? '链接已复制' : '链接已复制')
+// 大图预览灯箱
+const selectedLightboxImage = ref<LightboxImage | null>(null)
+const showLightbox = ref(false)
+const openLightbox = (item: RecentItem) => {
+  selectedLightboxImage.value = {
+    id: item.id,
+    name: item.name,
+    url: item.url,
+    thumbnailUrl: item.thumbnailUrl,
+    size: item.size,
+    type: item.type,
+    createdAt: item.createdAt,
+  }
+  showLightbox.value = true
+}
+
+// 复制成功的微动效状态追踪
+const copiedAction = ref<{ id: string; key: string } | null>(null)
+let copiedTimer: ReturnType<typeof setTimeout> | null = null
+
+const recentAction = async (item: RecentItem, action: 'preview' | 'copy' | 'code' | 'delete') => {
+  if (action === 'preview') {
+    openLightbox(item)
+  } else if (action === 'copy') {
+    if (await copyTextFallback(item.url)) {
+      copiedAction.value = { id: item.id, key: 'copy' }
+      toast.success('直链已复制')
+      if (copiedTimer) clearTimeout(copiedTimer)
+      copiedTimer = setTimeout(() => {
+        copiedAction.value = null
+      }, 1500)
+    } else {
+      toast.error('复制失败，请尝试手动复制')
+    }
   } else if (action === 'code') {
     const fmt = buildFormats({ url: item.url, name: item.name }, item.url).find((f) => f.key === 'markdown')
-    if (fmt) copyText(fmt.value, 'Markdown 已复制')
+    if (fmt && (await copyTextFallback(fmt.value))) {
+      copiedAction.value = { id: item.id, key: 'code' }
+      toast.success('Markdown 已复制')
+      if (copiedTimer) clearTimeout(copiedTimer)
+      copiedTimer = setTimeout(() => {
+        copiedAction.value = null
+      }, 1500)
+    } else {
+      toast.error('复制失败，请尝试手动复制')
+    }
   } else {
     try {
       const { data } = await axios.delete('/image-records', {
@@ -456,29 +498,46 @@ const goBatch = () => router.push('/admin')
           </button>
         </div>
 
+        <!-- 骨架屏：首屏/刷新加载中占位 -->
+        <div v-if="loadingStats && filteredRecent.length === 0" class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 2xl:grid-cols-4">
+          <div v-for="i in 4" :key="i" class="card overflow-hidden">
+            <div class="aspect-[4/3] shimmer-placeholder" />
+            <div class="p-3 space-y-2">
+              <div class="h-4 w-3/4 rounded-md shimmer-placeholder" />
+              <div class="h-3 w-1/2 rounded-md shimmer-placeholder" />
+            </div>
+          </div>
+        </div>
+
         <!-- 空态 -->
-        <div v-if="!loadingStats && filteredRecent.length === 0" class="card flex flex-col items-center justify-center gap-2 p-10 text-center">
+        <div v-else-if="!loadingStats && filteredRecent.length === 0" class="card flex flex-col items-center justify-center gap-2 p-10 text-center">
           <CloudUpload class="h-10 w-10 text-gray-300 dark:text-gray-600" />
           <p class="text-sm font-semibold text-gray-500 dark:text-gray-400">{{ keyword ? '没有匹配的图片' : '还没有上传记录' }}</p>
           <p v-if="keyword" class="text-xs text-gray-400 dark:text-gray-500">换个条件试试</p>
         </div>
 
-        <!-- 网格视图：桌面 4 列；窗口化 2~3 列；移动端 2 列 -->
-        <div v-else-if="viewMode === 'grid'" class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 2xl:grid-cols-4">
+        <!-- 网格视图：桌面 4 列；窗口化 2~3 列；移动端 2 列 (FLIP 列表动效) -->
+        <TransitionGroup
+          v-else-if="viewMode === 'grid'"
+          name="card-list"
+          tag="div"
+          class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 2xl:grid-cols-4"
+        >
           <div
             v-for="item in filteredRecent"
             :key="item.id"
             class="card group overflow-hidden"
           >
             <div class="relative aspect-[4/3] overflow-hidden bg-gray-100 dark:bg-gray-800">
-              <a :href="item.url" target="_blank" rel="noopener noreferrer" title="查看原图">
+              <a :href="item.url" @click.prevent="openLightbox(item)" title="点击大图预览" class="block h-full w-full cursor-zoom-in">
                 <img
                   :src="item.thumbnailUrl || item.url"
                   :alt="item.name"
                   loading="lazy"
                   decoding="async"
                   class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                @error="onThumbError" />
+                  @error="onThumbError"
+                />
               </a>
             </div>
             <div class="p-3">
@@ -491,39 +550,51 @@ const goBatch = () => router.push('/admin')
               <div class="mt-2 flex items-center gap-1">
                 <button
                   v-for="act in ([
-                    { key: 'link', icon: Link, title: '复制链接' },
-                    { key: 'copy', icon: Copy, title: '复制链接' },
+                    { key: 'preview', icon: ZoomIn, title: '大图预览' },
+                    { key: 'copy', icon: Copy, title: '复制直链' },
                     { key: 'code', icon: FileCode2, title: '复制 Markdown' },
                     { key: 'delete', icon: Trash2, title: '移入回收站' },
                   ] as const)"
                   :key="act.key"
                   @click="recentAction(item, act.key)"
                   :title="act.title"
-                  class="flex h-8 flex-1 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300"
-                  :class="act.key === 'delete' ? 'hover:!bg-red-50 hover:!text-red-500 dark:hover:!bg-red-500/10 dark:hover:!text-red-400' : ''"
+                  class="flex h-8 flex-1 items-center justify-center rounded-lg text-gray-400 transition-all hover:bg-indigo-50 hover:text-indigo-600 active:scale-95 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300"
+                  :class="[
+                    act.key === 'delete' ? 'hover:!bg-red-50 hover:!text-red-500 dark:hover:!bg-red-500/10 dark:hover:!text-red-400' : '',
+                    copiedAction?.id === item.id && copiedAction?.key === act.key ? 'text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/15' : ''
+                  ]"
                 >
-                  <component :is="act.icon" class="h-4 w-4" />
+                  <component
+                    :is="copiedAction?.id === item.id && copiedAction?.key === act.key ? Check : act.icon"
+                    class="h-4 w-4"
+                  />
                 </button>
               </div>
             </div>
           </div>
-        </div>
+        </TransitionGroup>
 
-        <!-- 列表视图 -->
-        <div v-else class="card divide-y divide-gray-100 overflow-hidden dark:divide-gray-800">
+        <!-- 列表视图 (FLIP 列表动效) -->
+        <TransitionGroup
+          v-else
+          name="card-list"
+          tag="div"
+          class="card divide-y divide-gray-100 overflow-hidden dark:divide-gray-800"
+        >
           <div
             v-for="item in filteredRecent"
             :key="item.id"
             class="flex items-center gap-3 px-3 py-2.5 sm:px-4"
           >
-            <a :href="item.url" target="_blank" rel="noopener noreferrer" class="h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-gray-100 dark:bg-gray-800" title="查看原图">
+            <a :href="item.url" @click.prevent="openLightbox(item)" class="h-11 w-11 shrink-0 cursor-zoom-in overflow-hidden rounded-lg bg-gray-100 dark:bg-gray-800" title="点击大图预览">
               <img
                 :src="item.thumbnailUrl || item.url"
                 :alt="item.name"
                 loading="lazy"
                 decoding="async"
                 class="h-full w-full object-cover"
-              @error="onThumbError" />
+                @error="onThumbError"
+              />
             </a>
             <div class="min-w-0 flex-1">
               <p class="truncate text-xs font-semibold text-gray-800 sm:text-sm dark:text-gray-100" :title="item.name">{{ item.name }}</p>
@@ -533,19 +604,32 @@ const goBatch = () => router.push('/admin')
                 <span>{{ formatRecentTime(item.createdAt) }}</span>
               </p>
             </div>
-            <div class="flex shrink-0 items-center">
-              <button @click="recentAction(item, 'link')" title="复制链接" class="rounded-lg p-2 text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300">
-                <Link class="h-4 w-4" />
+            <div class="flex shrink-0 items-center gap-0.5">
+              <button @click="recentAction(item, 'preview')" title="大图预览" class="rounded-lg p-2 text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300">
+                <ZoomIn class="h-4 w-4" />
               </button>
-              <button @click="recentAction(item, 'code')" title="复制 Markdown" class="hidden rounded-lg p-2 text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 sm:block dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300">
-                <Code2 class="h-4 w-4" />
+              <button
+                @click="recentAction(item, 'copy')"
+                title="复制直链"
+                class="rounded-lg p-2 text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300"
+                :class="copiedAction?.id === item.id && copiedAction?.key === 'copy' ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/15' : ''"
+              >
+                <component :is="copiedAction?.id === item.id && copiedAction?.key === 'copy' ? Check : Copy" class="h-4 w-4" />
+              </button>
+              <button
+                @click="recentAction(item, 'code')"
+                title="复制 Markdown"
+                class="hidden rounded-lg p-2 text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 sm:block dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300"
+                :class="copiedAction?.id === item.id && copiedAction?.key === 'code' ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/15' : ''"
+              >
+                <component :is="copiedAction?.id === item.id && copiedAction?.key === 'code' ? Check : FileCode2" class="h-4 w-4" />
               </button>
               <button @click="recentAction(item, 'delete')" title="移入回收站" class="rounded-lg p-2 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10 dark:hover:text-red-400">
                 <Trash2 class="h-4 w-4" />
               </button>
             </div>
           </div>
-        </div>
+        </TransitionGroup>
       </div>
 
       <!-- 上传结果列表 -->
@@ -615,5 +699,12 @@ const goBatch = () => router.push('/admin')
         <ArrowRight class="h-4 w-4 transition-transform group-hover:translate-x-1" />
       </button>
     </div>
+
+    <!-- 内置大图沉浸式预览灯箱 -->
+    <ImageLightboxModal
+      :open="showLightbox"
+      :image="selectedLightboxImage"
+      @close="showLightbox = false"
+    />
   </AppShell>
 </template>

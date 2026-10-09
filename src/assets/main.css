@@ -59,25 +59,82 @@
   }
 }
 
-/* [旧版已下线] 极光背景 / 玻璃拟态残留：模板里已无引用，保留 keyframes 空壳避免第三方引用报错，
-   下个大版本可整段删除（aurora / float / drift / geo / aurora-bg / glass-card / glass-card-premium） */
-@keyframes aurora {
-  0% { background-position: 50% 50%, 50% 50%; }
-  100% { background-position: 50% 50%, 50% 50%; }
-}
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-26px); }
-}
-@keyframes drift {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(-6px, -36px); }
-}
-
-/* [新增] 云朵整体轻微的上下浮动（侧栏插画用） */
+/* 侧栏插画：云朵轻微的上下漂浮动效 */
 @keyframes bob {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
+  50% { transform: translateY(-7px); }
+}
+.animate-bob { animation: bob 6s ease-in-out infinite; }
+
+/* 侧栏插画：拍立得照片错落微浮动 */
+@keyframes float-photo-left {
+  0%, 100% { transform: translateY(0) rotate(-8deg); }
+  50% { transform: translateY(-4px) rotate(-7deg); }
+}
+.animate-float-left { animation: float-photo-left 4.8s ease-in-out infinite 0.2s; }
+
+@keyframes float-photo-mid {
+  0%, 100% { transform: translate(-50%, 0); }
+  50% { transform: translate(-50%, -6px); }
+}
+.animate-float-mid { animation: float-photo-mid 5.2s ease-in-out infinite 0.8s; }
+
+@keyframes float-photo-right {
+  0%, 100% { transform: translateY(0) rotate(8deg); }
+  50% { transform: translateY(-4px) rotate(9deg); }
+}
+.animate-float-right { animation: float-photo-right 4.6s ease-in-out infinite 0.5s; }
+
+/* 骨架屏扫光加载动效 */
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+.shimmer-placeholder {
+  position: relative;
+  overflow: hidden;
+  background-color: rgb(243 244 246);
+}
+.dark .shimmer-placeholder {
+  background-color: rgb(31 41 55);
+}
+.shimmer-placeholder::after {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.4) 30%,
+    rgba(255, 255, 255, 0.7) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: shimmer 1.8s infinite;
+  content: '';
+}
+.dark .shimmer-placeholder::after {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.04) 30%,
+    rgba(255, 255, 255, 0.09) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+/* 列表增删/重排平滑过渡 (FLIP) */
+.card-list-move,
+.card-list-enter-active,
+.card-list-leave-active {
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.card-list-enter-from,
+.card-list-leave-to {
+  opacity: 0;
+  transform: scale(0.96) translateY(8px);
+}
+.card-list-leave-active {
+  position: absolute;
+  pointer-events: none;
 }
 
 /* 品牌主渐变：Logo、主按钮、分隔线等品牌元素统一使用，避免多种渐变并存 */
@@ -117,17 +174,19 @@
 
 /* 减少动态偏好：关闭装饰性动画 */
 @media (prefers-reduced-motion: reduce) {
+  .animate-bob,
+  .animate-float-left,
+  .animate-float-mid,
+  .animate-float-right,
+  .shimmer-placeholder::after,
   .animate-modal-pop,
-  .animate-icon-shake {
-    animation: none;
+  .animate-icon-shake,
+  .card-list-move,
+  .card-list-enter-active,
+  .card-list-leave-active {
+    animation: none !important;
+    transition: none !important;
   }
-}
-
-/* [旧版已下线] 玻璃拟态残留：模板里已无引用，保留空壳避免构建告警，下个大版本可整段删除 */
-.glass-card,
-.glass-card-premium,
-.dark .glass-card-premium {
-  background-image: none;
 }
 
 /* 自定义阴影 */

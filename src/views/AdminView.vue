@@ -980,9 +980,19 @@ const handleImportFile = async (e: Event) => {
 }
 
 // 复用 buildFormats，保证与上传结果卡的转义规则一致
-const copyFormat = (item: ImageRecord, key: 'url' | 'markdown' | 'html' | 'bbcode') => {
+const copiedRecordId = ref<{ id: string; key: string } | null>(null)
+let copyFormatTimer: ReturnType<typeof setTimeout> | null = null
+
+const copyFormat = async (item: ImageRecord, key: 'url' | 'markdown' | 'html' | 'bbcode') => {
   const fmt = buildFormats(item, item.url).find((f) => f.key === key)
-  if (fmt) copyText(fmt.value, { url: '链接已复制', markdown: 'Markdown 已复制', html: 'HTML 已复制', bbcode: 'BBCode 已复制' }[key])
+  if (fmt) {
+    await copyText(fmt.value, { url: '链接已复制', markdown: 'Markdown 已复制', html: 'HTML 已复制', bbcode: 'BBCode 已复制' }[key])
+    copiedRecordId.value = { id: item.id, key }
+    if (copyFormatTimer) clearTimeout(copyFormatTimer)
+    copyFormatTimer = setTimeout(() => {
+      copiedRecordId.value = null
+    }, 1500)
+  }
 }
 
 // 预览底部操作条的复制按钮（四种格式）
@@ -1416,7 +1426,7 @@ onUnmounted(() => {
       >
         <div
           v-if="selectMode || selectedList.length > 0"
-          class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-indigo-200/60 bg-indigo-50/70 px-5 py-3 max-md:fixed max-md:inset-x-3 max-md:bottom-[4.75rem] max-md:z-40 max-md:shadow-xl dark:border-indigo-500/20 dark:bg-indigo-900/20"
+          class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-indigo-200/60 bg-indigo-50/80 px-5 py-3 backdrop-blur-md max-md:fixed max-md:inset-x-3 max-md:bottom-[4.75rem] max-md:z-40 max-md:bg-indigo-50/95 max-md:shadow-2xl dark:border-indigo-500/20 dark:bg-indigo-900/30 dark:max-md:bg-gray-900/95"
         >
           <p class="relative text-sm font-semibold text-indigo-700 dark:text-indigo-300">
             已选 <span class="font-bold">{{ selectedList.length }}</span>{{ selectMode ? ` / ${filteredList.length} 张` : ' 项' }}
@@ -1518,10 +1528,10 @@ onUnmounted(() => {
       <template v-if="viewMode === 'grid'">
         <div v-if="loading" :class="gridClass">
           <div v-for="i in 8" :key="i" class="card overflow-hidden">
-            <div class="aspect-[4/3] animate-pulse bg-gray-200/70 dark:bg-gray-700/40" />
+            <div class="aspect-[4/3] shimmer-placeholder" />
             <div class="space-y-2 p-3">
-              <div class="h-3.5 w-2/3 animate-pulse rounded-full bg-gray-200/70 dark:bg-gray-700/40" />
-              <div class="h-3 w-1/2 animate-pulse rounded-full bg-gray-200/50 dark:bg-gray-700/30" />
+              <div class="h-3.5 w-2/3 rounded-full shimmer-placeholder" />
+              <div class="h-3 w-1/2 rounded-full shimmer-placeholder" />
             </div>
           </div>
         </div>
@@ -1546,7 +1556,7 @@ onUnmounted(() => {
           </RouterLink>
         </div>
 
-        <div v-else :class="gridClass">
+        <TransitionGroup v-else name="card-list" tag="div" :class="gridClass">
           <div
             v-for="(item, idx) in pagedList"
             :key="item.id"
@@ -1689,7 +1699,8 @@ onUnmounted(() => {
                 title="复制链接"
                 class="absolute bottom-2 right-2 flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 text-gray-500 opacity-0 shadow-sm backdrop-blur transition-all hover:text-indigo-600 group-hover:opacity-100 dark:bg-gray-900/80 dark:text-gray-400 dark:hover:text-indigo-300"
               >
-                <LinkIcon class="h-3.5 w-3.5" />
+                <Check v-if="copiedRecordId?.id === item.id && copiedRecordId?.key === 'url'" class="h-3.5 w-3.5 text-emerald-500" />
+                <LinkIcon v-else class="h-3.5 w-3.5" />
               </button>
               <button
                 v-else
@@ -1720,24 +1731,30 @@ onUnmounted(() => {
                   @click="copyFormat(item, 'url')"
                   title="复制链接"
                   class="flex h-8 flex-1 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300"
+                  :class="copiedRecordId?.id === item.id && copiedRecordId?.key === 'url' ? 'text-emerald-500 dark:text-emerald-400' : ''"
                 >
-                  <LinkIcon class="h-4 w-4" />
+                  <Check v-if="copiedRecordId?.id === item.id && copiedRecordId?.key === 'url'" class="h-4 w-4 text-emerald-500" />
+                  <LinkIcon v-else class="h-4 w-4" />
                 </button>
                 <button
                   v-if="!trashMode"
                   @click="copyFormat(item, 'markdown')"
                   title="复制 Markdown"
                   class="flex h-8 flex-1 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300"
+                  :class="copiedRecordId?.id === item.id && copiedRecordId?.key === 'markdown' ? 'text-emerald-500 dark:text-emerald-400' : ''"
                 >
-                  <Copy class="h-4 w-4" />
+                  <Check v-if="copiedRecordId?.id === item.id && copiedRecordId?.key === 'markdown'" class="h-4 w-4 text-emerald-500" />
+                  <Copy v-else class="h-4 w-4" />
                 </button>
                 <button
                   v-if="!trashMode"
                   @click="copyFormat(item, 'html')"
                   title="复制 HTML"
                   class="flex h-8 flex-1 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300"
+                  :class="copiedRecordId?.id === item.id && copiedRecordId?.key === 'html' ? 'text-emerald-500 dark:text-emerald-400' : ''"
                 >
-                  <Braces class="h-4 w-4" />
+                  <Check v-if="copiedRecordId?.id === item.id && copiedRecordId?.key === 'html'" class="h-4 w-4 text-emerald-500" />
+                  <Braces v-else class="h-4 w-4" />
                 </button>
                 <button
                   v-if="trashMode"
@@ -1757,7 +1774,7 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-        </div>
+        </TransitionGroup>
 
         <!-- 网格分页 -->
         <PaginationBar
@@ -1772,15 +1789,15 @@ onUnmounted(() => {
       <template v-else>
       <div class="card overflow-hidden">
         <div v-if="loading" class="space-y-4 p-6">
-          <!-- 骨架屏：模拟真实行高，加载完不跳动 -->
+          <!-- 骨架屏：模拟真实行高扫光动效，加载完不跳动 -->
           <div v-for="i in 8" :key="i" class="flex items-center gap-4">
-            <div class="h-14 w-14 shrink-0 animate-pulse rounded-xl bg-gray-200/70 dark:bg-gray-700/50"></div>
+            <div class="h-14 w-14 shrink-0 rounded-xl shimmer-placeholder"></div>
             <div class="flex-1 space-y-2">
-              <div class="h-3.5 w-1/3 animate-pulse rounded-full bg-gray-200/70 dark:bg-gray-700/50"></div>
-              <div class="h-3 w-1/4 animate-pulse rounded-full bg-gray-200/50 dark:bg-gray-700/30"></div>
+              <div class="h-3.5 w-1/3 rounded-full shimmer-placeholder"></div>
+              <div class="h-3 w-1/4 rounded-full shimmer-placeholder"></div>
             </div>
-            <div class="hidden h-3 w-16 animate-pulse rounded-full bg-gray-200/50 sm:block dark:bg-gray-700/30"></div>
-            <div class="hidden h-3 w-28 animate-pulse rounded-full bg-gray-200/50 md:block dark:bg-gray-700/30"></div>
+            <div class="hidden h-3 w-16 rounded-full sm:block shimmer-placeholder"></div>
+            <div class="hidden h-3 w-28 rounded-full md:block shimmer-placeholder"></div>
           </div>
         </div>
 
@@ -1805,8 +1822,8 @@ onUnmounted(() => {
         </div>
 
         <template v-else>
-          <!-- 单列表自适应布局：桌面/移动端同一结构，窄屏自动隐藏次要信息，保证不出现横向滚动 -->
-          <div class="divide-y divide-gray-100/50 dark:divide-gray-800/50">
+          <!-- 单列表自适应布局：桌面/移动端同一结构 (FLIP 列表动效) -->
+          <TransitionGroup name="card-list" tag="div" class="divide-y divide-gray-100/50 dark:divide-gray-800/50">
             <div
               v-for="(item, idx) in pagedList"
               :key="item.id"
@@ -1883,17 +1900,21 @@ onUnmounted(() => {
                   v-if="!trashMode"
                   @click="copyFormat(item, 'url')"
                   class="rounded-lg p-2 text-gray-400 hover:bg-indigo-50 hover:text-indigo-600 transition dark:text-gray-500 dark:hover:bg-indigo-900/20 dark:hover:text-indigo-400"
+                  :class="copiedRecordId?.id === item.id && copiedRecordId?.key === 'url' ? 'text-emerald-500 dark:text-emerald-400' : ''"
                   title="复制链接"
                 >
-                  <Copy class="h-4 w-4" />
+                  <Check v-if="copiedRecordId?.id === item.id && copiedRecordId?.key === 'url'" class="h-4 w-4 text-emerald-500" />
+                  <Copy v-else class="h-4 w-4" />
                 </button>
                 <button
                   v-if="!trashMode"
                   @click="copyFormat(item, 'markdown')"
                   class="rounded-lg p-2 text-gray-400 hover:bg-indigo-50 hover:text-indigo-600 transition dark:text-gray-500 dark:hover:bg-indigo-900/20 dark:hover:text-indigo-400"
+                  :class="copiedRecordId?.id === item.id && copiedRecordId?.key === 'markdown' ? 'text-emerald-500 dark:text-emerald-400' : ''"
                   title="复制 Markdown"
                 >
-                  <Braces class="h-4 w-4" />
+                  <Check v-if="copiedRecordId?.id === item.id && copiedRecordId?.key === 'markdown'" class="h-4 w-4 text-emerald-500" />
+                  <Braces v-else class="h-4 w-4" />
                 </button>
                 <button
                   v-if="trashMode"
@@ -1912,7 +1933,7 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
-          </div>
+          </TransitionGroup>
 
           <!-- 分页 -->
           <PaginationBar

@@ -64,11 +64,25 @@ async function verifyAuthToken(token, env) {
   }
 }
 
-async function isAuthorized(request, env) {
-  if (!env?.SITE_PASSWORD) return true
+async function isAuthorized(request, env, requiredLevel = 'read') {
   const auth = request.headers.get('authorization') || ''
-  if (!auth.startsWith('Bearer ')) return false
-  return verifyAuthToken(auth.slice(7), env)
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
+
+  // 1. 若设置了 SITE_PASSWORD，要求常规访问 token
+  if (env?.SITE_PASSWORD) {
+    if (!token) return false
+    return verifyAuthToken(token, env)
+  }
+
+  // 2. 若未设 SITE_PASSWORD（开放图床）但设置了 ADMIN_PASSWORD：
+  // 敏感管理操作（写配置、删除、彻底清空）需要通过 ADMIN_PASSWORD 鉴权
+  if (env?.ADMIN_PASSWORD && requiredLevel === 'admin') {
+    if (!token) return false
+    return verifyAuthToken(token, { ...env, SITE_PASSWORD: env.ADMIN_PASSWORD })
+  }
+
+  // 3. 开放访问模式允许通行
+  return true
 }
 
 // 简单的速率限制（内存版，多实例/边缘运行时下为尽力而为的防护，与 node-functions 侧同策略）

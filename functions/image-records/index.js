@@ -109,11 +109,24 @@ export async function onRequest({ request, env }) {
       return json(0, '获取成功', { ...doc, stats: buildStorageBreakdown(index) })
     }
 
-    if (!(await isAuthorized(request, env))) {
-      return json(401, '未授权访问', null, 401)
+    const isAdminOp =
+      request.method === 'DELETE' ||
+      url.searchParams.get('storage-write') === '1' ||
+      url.searchParams.get('settings-write') === '1' ||
+      url.searchParams.get('purge') === '1'
+
+    if (!(await isAuthorized(request, env, isAdminOp ? 'admin' : 'read'))) {
+      return json(401, '未授权访问（管理操作受限）', null, 401)
     }
 
     const ip = getClientIp(request)
+
+    // 开放模式下无密码时，对破坏性删除操作施加更严格的速率保护（防脚本批量擦除）
+    if (request.method === 'DELETE' && !env?.SITE_PASSWORD && !env?.ADMIN_PASSWORD) {
+      if (await isRateLimited(`del:${ip}`, 20)) {
+        return json(429, '删除请求过于频繁，请稍后再试', null, 429)
+      }
+    }
 
     // 写操作更严格；批量写单独放宽（一次请求写多条，请求数反而更少）
     if (request.method !== 'GET') {
